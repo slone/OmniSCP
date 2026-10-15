@@ -1,6 +1,19 @@
 # Rust build artifacts
-/target/
+/src-tauri/target/
 **/*.rs.bk
+
+# Tauri generated schemas
+/src-tauri/gen/schemas
+
+# Node.js
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Logs
+*.log
+npm-debug.log*
 
 # IDE
 .idea/
@@ -8,6 +21,10 @@
 *.swp
 *.swo
 *~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
 
 # OS
 .DS_Store
