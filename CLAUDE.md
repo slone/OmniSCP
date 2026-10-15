@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MultiSCP is a cross-platform file transfer application inspired by WinSCP. It enables users to connect to remote servers, browse files, transfer data, and manage connection profiles through a graphical interface.
+OmniSCP is a cross-platform file transfer application inspired by WinSCP. It enables users to connect to remote servers, browse files, transfer data, and manage connection profiles through a graphical interface.
 
 **Language:** Rust (mandatory requirement)
 **Platforms:** macOS, Linux, Windows
