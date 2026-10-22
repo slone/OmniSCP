@@ -1,160 +1,129 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-
-const greetMsg = ref("");
-const name = ref("");
-
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsg.value = await invoke("greet", { name: name.value });
-}
+import AppToolbar from './components/AppToolbar.vue';
+import AppStatusBar from './components/AppStatusBar.vue';
+import ProfileSidebar from './components/sidebar/ProfileSidebar.vue';
+import DualPaneView from './components/filepane/DualPaneView.vue';
+import BottomPanel from './components/bottom/BottomPanel.vue';
+import FileActionDialogs from './components/dialogs/FileActionDialogs.vue';
 </script>
 
 <template>
-  <main class="container">
-    <h1>Welcome to Tauri + Vue</h1>
+  <div class="app-layout">
+    <header class="app-toolbar">
+      <AppToolbar />
+    </header>
 
-    <div class="row">
-      <a href="https://vite.dev" target="_blank">
-        <img src="/vite.svg" class="logo vite" alt="Vite logo" />
-      </a>
-      <a href="https://tauri.app" target="_blank">
-        <img src="/tauri.svg" class="logo tauri" alt="Tauri logo" />
-      </a>
-      <a href="https://vuejs.org/" target="_blank">
-        <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-      </a>
-    </div>
-    <p>Click on the Tauri, Vite, and Vue logos to learn more.</p>
+    <aside class="app-sidebar">
+      <ProfileSidebar />
+    </aside>
 
-    <form class="row" @submit.prevent="greet">
-      <input id="greet-input" v-model="name" placeholder="Enter a name..." />
-      <button type="submit">Greet</button>
-    </form>
-    <p>{{ greetMsg }}</p>
-  </main>
+    <main class="app-main">
+      <div class="main-files">
+        <DualPaneView />
+      </div>
+      <div class="main-bottom">
+        <BottomPanel />
+      </div>
+    </main>
+
+    <footer class="app-statusbar">
+      <AppStatusBar />
+    </footer>
+
+    <FileActionDialogs />
+  </div>
 </template>
 
-<style scoped>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.vue:hover {
-  filter: drop-shadow(0 0 2em #249b73);
-}
-
-</style>
 <style>
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
+  /* Colors — dark theme */
+  --color-bg: #1e1e1e;
+  --color-surface: #252526;
+  --color-border: #3c3c3c;
+  --color-hover: #2a2d2e;
+  --color-active: #37373d;
+  --color-accent: #0078d4;
+  --color-text: #cccccc;
+  --color-text-muted: #808080;
 
-  color: #0f0f0f;
-  background-color: #f6f6f6;
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
 
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+  /* Layout */
+  --sidebar-width: 200px;
+  --toolbar-height: 36px;
+  --statusbar-height: 22px;
+  --bottom-panel-height: 180px;
+
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
 }
 
-.container {
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
   margin: 0;
-  padding-top: 10vh;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  overflow: hidden;
+}
+</style>
+
+<style scoped>
+.app-layout {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-rows: var(--toolbar-height) 1fr var(--statusbar-height);
+  grid-template-areas:
+    "toolbar  toolbar"
+    "sidebar  main"
+    "statusbar statusbar";
+  height: 100%;
+  overflow: hidden;
+}
+
+.app-toolbar {
+  grid-area: toolbar;
+}
+
+.app-sidebar {
+  grid-area: sidebar;
+  overflow: hidden;
+}
+
+.app-main {
+  grid-area: main;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  text-align: center;
+  overflow: hidden;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
+.main-files {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
+.main-bottom {
+  height: var(--bottom-panel-height);
+  flex-shrink: 0;
+  overflow: hidden;
 }
 
-.row {
-  display: flex;
-  justify-content: center;
+.app-statusbar {
+  grid-area: statusbar;
 }
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-
-  a:hover {
-    color: #24c8db;
-  }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
-
 </style>

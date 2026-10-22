@@ -1,7 +1,10 @@
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+pub mod sftp;
 
-use crate::error::Result;
+use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+use crate::error::{OmniError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProtocolType {
@@ -47,15 +50,163 @@ pub struct FileEntry {
     pub group: Option<String>,
 }
 
+/// Renders Unix mode bits as `drwxr-xr-x`.
+pub fn format_permissions(mode: u32, is_dir: bool) -> String {
+    const BITS: [(u32, char); 9] = [
+        (0o400, 'r'),
+        (0o200, 'w'),
+        (0o100, 'x'),
+        (0o040, 'r'),
+        (0o020, 'w'),
+        (0o010, 'x'),
+        (0o004, 'r'),
+        (0o002, 'w'),
+        (0o001, 'x'),
+    ];
+    let mut s = String::with_capacity(10);
+    s.push(if is_dir { 'd' } else { '-' });
+    for (bit, c) in BITS {
+        s.push(if mode & bit != 0 { c } else { '-' });
+    }
+    s
+}
+
+/// Sort: directories first, then case-insensitive alphabetical.
+pub fn sort_entries(entries: &mut [FileEntry]) {
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+}
+
+/// Receives the number of bytes copied since the previous call; returning `false` cancels.
+pub type Progress<'a> = &'a mut dyn FnMut(u64) -> bool;
+
+const COPY_BUFFER_SIZE: usize = 256 * 1024;
+
+/// Copies `reader` into `writer`, reporting progress after each chunk.
+pub fn copy_with_progress(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    progress: Progress,
+) -> std::result::Result<(), CopyError> {
+    let mut buf = vec![0u8; COPY_BUFFER_SIZE];
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(CopyError::Read(e)),
+        };
+        writer.write_all(&buf[..n]).map_err(CopyError::Write)?;
+        if !progress(n as u64) {
+            return Err(CopyError::Cancelled);
+        }
+    }
+    writer.flush().map_err(CopyError::Write)
+}
+
+#[derive(Debug)]
+pub enum CopyError {
+    Read(std::io::Error),
+    Write(std::io::Error),
+    Cancelled,
+}
+
+/// Joins a remote (always `/`-separated) directory and a file name.
+pub fn remote_join(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// Parent of a remote path, `None` at the root.
+pub fn remote_parent(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.rfind('/') {
+        Some(0) => Some("/".to_string()),
+        Some(i) => Some(trimmed[..i].to_string()),
+        None => None,
+    }
+}
+
+/// Last segment of a remote path.
+pub fn remote_file_name(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+/// Rejects names that would escape the target directory or are not valid file names.
+pub fn validate_file_name(name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
+        return Err(OmniError::Config(format!("Invalid file name: \"{name}\"")));
+    }
+    Ok(())
+}
+
+/// First free variant of `name` ("report (1).pdf", "report (2).pdf", ...).
+pub fn unique_name(name: &str, exists: impl Fn(&str) -> bool) -> String {
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    (1..)
+        .map(|n| format!("{stem} ({n}){ext}"))
+        .find(|candidate| !exists(candidate))
+        .expect("unbounded range always yields a free name")
+}
+
 pub trait Protocol: Send + Sync {
     fn connect(&mut self) -> Result<()>;
     fn disconnect(&mut self) -> Result<()>;
     fn is_connected(&self) -> bool;
     fn list_dir(&self, path: &str) -> Result<Vec<FileEntry>>;
-    fn upload(&self, local: &str, remote: &str) -> Result<()>;
-    fn download(&self, remote: &str, local: &str) -> Result<()>;
+    fn upload(&self, local: &Path, remote: &str, progress: Progress) -> Result<()>;
+    fn download(&self, remote: &str, local: &Path, progress: Progress) -> Result<()>;
     fn mkdir(&self, path: &str) -> Result<()>;
     fn rename(&self, from: &str, to: &str) -> Result<()>;
+    /// Deletes a file, or a directory and everything it contains.
     fn delete(&self, path: &str) -> Result<()>;
     fn stat(&self, path: &str) -> Result<FileEntry>;
+    fn exists(&self, path: &str) -> bool {
+        self.stat(path).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_paths() {
+        assert_eq!(remote_join("/", "a"), "/a");
+        assert_eq!(remote_join("/home/u", "a"), "/home/u/a");
+        assert_eq!(remote_parent("/home/u/"), Some("/home".into()));
+        assert_eq!(remote_parent("/home"), Some("/".into()));
+        assert_eq!(remote_parent("/"), None);
+        assert_eq!(remote_file_name("/home/u/file.txt"), "file.txt");
+    }
+
+    #[test]
+    fn unique_name_keeps_extension() {
+        let taken = ["a.txt", "a (1).txt"];
+        assert_eq!(unique_name("a.txt", |n| taken.contains(&n)), "a (2).txt");
+        assert_eq!(unique_name(".bashrc", |_| false), ".bashrc (1)");
+        assert_eq!(unique_name("dir", |_| false), "dir (1)");
+    }
+
+    #[test]
+    fn file_name_validation() {
+        assert!(validate_file_name("ok.txt").is_ok());
+        for bad in ["", " ", ".", "..", "a/b", "a\\b"] {
+            assert!(validate_file_name(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
 }

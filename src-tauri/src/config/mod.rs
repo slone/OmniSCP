@@ -1,8 +1,11 @@
+pub mod credentials;
+
 use serde::{Deserialize, Serialize};
 
 use crate::protocols::ProtocolType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum AuthMethod {
     Password,
     KeyFile { path: String },
@@ -22,6 +25,9 @@ pub struct Profile {
     pub remote_directory: Option<String>,
     pub description: Option<String>,
     pub tags: Vec<String>,
+    /// The password or passphrase is kept in the OS credential store (see `credentials`).
+    #[serde(default)]
+    pub save_password: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,3 +1,5 @@
+pub mod queue;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -11,6 +13,8 @@ pub enum TransferStatus {
     Pending,
     InProgress,
     Completed,
+    /// Destination already existed and the conflict strategy was Skip.
+    Skipped,
     Cancelled,
     Failed,
 }
