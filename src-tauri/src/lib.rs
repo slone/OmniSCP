@@ -22,7 +22,6 @@ pub fn run() {
             commands::connect_sftp,
             commands::disconnect_sftp,
             commands::list_remote_dir,
-            commands::get_connection_status,
             commands::create_remote_dir,
             commands::rename_remote,
             commands::delete_remote,

@@ -8,6 +8,7 @@ function statusLabel(status: string): string {
     Pending: 'En attente',
     InProgress: 'En cours',
     Completed: 'Terminé',
+    CompletedWithWarnings: 'Terminé avec avertissements',
     Skipped: 'Ignoré',
     Cancelled: 'Annulé',
     Failed: 'Échoué',
@@ -171,6 +172,11 @@ function canCancel(job: QueuedTransfer): boolean {
 .status-completed {
   background: #1a3a1a;
   color: #4ade80;
+}
+
+.status-completedwithwarnings {
+  background: #3a2f10;
+  color: #fbbf24;
 }
 
 .status-inprogress {

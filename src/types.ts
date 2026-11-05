@@ -26,7 +26,9 @@ export interface Profile {
 export interface FileEntry {
   name: string;
   path: string;
+  /// For a symlink, describes the target.
   is_dir: boolean;
+  is_symlink: boolean;
   size: number;
   modified?: number;
   permissions?: string;
@@ -40,6 +42,7 @@ export type TransferStatus =
   | 'Pending'
   | 'InProgress'
   | 'Completed'
+  | 'CompletedWithWarnings'
   | 'Skipped'
   | 'Cancelled'
   | 'Failed';

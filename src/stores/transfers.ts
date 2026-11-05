@@ -14,7 +14,7 @@ export interface QueuedTransfer extends TransferJob {
   error?: string;
 }
 
-const FINISHED = new Set(['Completed', 'Skipped', 'Cancelled', 'Failed']);
+const FINISHED = new Set(['Completed', 'CompletedWithWarnings', 'Skipped', 'Cancelled', 'Failed']);
 
 export const useTransfersStore = defineStore('transfers', () => {
   const jobs = ref<QueuedTransfer[]>([]);
@@ -57,6 +57,9 @@ export const useTransfersStore = defineStore('transfers', () => {
       case 'Completed':
         logStore.addLog('Info', action, 'OK', `${job.source} → ${job.destination}`);
         break;
+      case 'CompletedWithWarnings':
+        logStore.addLog('Warning', action, 'Partiel', `${job.source} → ${job.destination} — ${job.error ?? ''}`);
+        break;
       case 'Skipped':
         logStore.addLog('Info', action, 'Ignoré', `${job.source} — la destination existe déjà`);
         break;
@@ -70,7 +73,8 @@ export const useTransfersStore = defineStore('transfers', () => {
 
     // Show the new files if the destination directory is on screen.
     const pane = job.direction === 'Upload' ? useConnectionStore() : useLocalFilesStore();
-    if (job.status === 'Completed' && pane.currentPath === job.dest_dir) {
+    const wroteFiles = job.status === 'Completed' || job.status === 'CompletedWithWarnings';
+    if (wroteFiles && pane.currentPath === job.dest_dir) {
       pane.refresh();
     }
   }

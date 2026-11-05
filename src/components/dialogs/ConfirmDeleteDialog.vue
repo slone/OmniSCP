@@ -9,7 +9,7 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>();
 const cancelRef = ref<HTMLButtonElement | null>(null);
 const MAX_LISTED = 8;
 
-const hasDirs = computed(() => props.entries.some((e) => e.is_dir));
+const hasDirs = computed(() => props.entries.some((e) => e.is_dir && !e.is_symlink));
 const listed = computed(() => props.entries.slice(0, MAX_LISTED));
 
 onMounted(() => {
@@ -26,7 +26,7 @@ onMounted(() => {
       Cette action est irréversible.
     </p>
     <ul class="entry-list">
-      <li v-for="entry in listed" :key="entry.path">{{ entry.is_dir ? '📁' : '📄' }} {{ entry.name }}</li>
+      <li v-for="entry in listed" :key="entry.path">{{ entry.is_symlink ? '🔗' : entry.is_dir ? '📁' : '📄' }} {{ entry.name }}</li>
       <li v-if="entries.length > MAX_LISTED" class="more">… et {{ entries.length - MAX_LISTED }} autre(s)</li>
     </ul>
     <p v-if="hasDirs" class="warning">Les dossiers seront supprimés avec tout leur contenu.</p>

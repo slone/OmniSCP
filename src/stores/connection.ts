@@ -70,6 +70,13 @@ export const useConnectionStore = defineStore('connection', () => {
     }
   }
 
+  /// Leaves the connected state if `err` says the session died; other errors are ignored.
+  async function handleConnectionLost(err: unknown) {
+    if (!isBackendError(err) || err.kind !== 'ConnectionLost' || !connected.value) return;
+    await disconnect();
+    error.value = 'La connexion au serveur a été perdue. Reconnectez-vous pour continuer.';
+  }
+
   async function navigateTo(path: string) {
     const logStore = useLogStore();
     loading.value = true;
@@ -91,6 +98,7 @@ export const useConnectionStore = defineStore('connection', () => {
       const message = errorMessage(err);
       logStore.addLog('Error', 'Navigation distante', 'Échec', `${path} — ${message}`);
       error.value = message;
+      await handleConnectionLost(err);
     } finally {
       loading.value = false;
     }
@@ -119,6 +127,7 @@ export const useConnectionStore = defineStore('connection', () => {
     error,
     connect,
     disconnect,
+    handleConnectionLost,
     navigateTo,
     navigateUp,
     refresh,

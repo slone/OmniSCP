@@ -15,6 +15,8 @@ pub enum OmniError {
     HostKeyMismatch(String),
     /// Operation stopped at the user's request.
     Cancelled,
+    /// The session died; the user has to connect again.
+    ConnectionLost,
     Io(std::io::Error),
 }
 
@@ -32,6 +34,7 @@ impl Serialize for OmniError {
             OmniError::HostKeyUnknown(_) => "HostKeyUnknown",
             OmniError::HostKeyMismatch(_) => "HostKeyMismatch",
             OmniError::Cancelled => "Cancelled",
+            OmniError::ConnectionLost => "ConnectionLost",
             OmniError::Io(_) => "Io",
         };
         let fingerprint = match self {
@@ -60,6 +63,7 @@ impl fmt::Display for OmniError {
                 "Host key mismatch: the server presented {fp}, which differs from the recorded key"
             ),
             OmniError::Cancelled => write!(f, "Cancelled"),
+            OmniError::ConnectionLost => write!(f, "Connection to the server was lost"),
             OmniError::Io(err) => write!(f, "I/O error: {err}"),
         }
     }

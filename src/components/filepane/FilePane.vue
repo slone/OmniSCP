@@ -200,7 +200,7 @@ function formatDate(timestamp?: number): string {
             @dragstart="onDragStart($event, file)"
           >
             <td class="col-name">
-              <span class="file-icon">{{ file.is_dir ? '📁' : '📄' }}</span>
+              <span class="file-icon">{{ file.is_symlink ? '🔗' : file.is_dir ? '📁' : '📄' }}</span>
               {{ file.name }}
             </td>
             <td class="col-size">{{ file.is_dir ? '' : formatSize(file.size) }}</td>

@@ -42,7 +42,10 @@ impl ProtocolType {
 pub struct FileEntry {
     pub name: String,
     pub path: PathBuf,
+    /// For a symlink, describes the target: a link to a directory can be browsed.
     pub is_dir: bool,
+    /// Transfers never follow links to directories (they can loop) and deletes remove the link.
+    pub is_symlink: bool,
     pub size: u64,
     pub modified: Option<i64>,
     pub permissions: Option<String>,
@@ -142,6 +145,20 @@ pub fn remote_file_name(path: &str) -> &str {
     trimmed.rsplit('/').next().unwrap_or(trimmed)
 }
 
+/// Short hidden name for data being written, renamed over the destination once complete.
+pub fn temp_file_name() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(".omniscp-{millis:x}-{count:x}.part")
+}
+
 /// Rejects names that would escape the target directory or are not valid file names.
 pub fn validate_file_name(name: &str) -> Result<()> {
     let name = name.trim();
@@ -166,9 +183,13 @@ pub fn unique_name(name: &str, exists: impl Fn(&str) -> bool) -> String {
 pub trait Protocol: Send + Sync {
     fn connect(&mut self) -> Result<()>;
     fn disconnect(&mut self) -> Result<()>;
-    fn is_connected(&self) -> bool;
+    /// Asks the server, so this can block; a session can die without any local sign.
+    fn is_alive(&self) -> bool;
     fn list_dir(&self, path: &str) -> Result<Vec<FileEntry>>;
+    /// The destination only changes once the data is complete: a failed or
+    /// cancelled copy leaves any existing file untouched.
     fn upload(&self, local: &Path, remote: &str, progress: Progress) -> Result<()>;
+    /// Same guarantee as `upload`.
     fn download(&self, remote: &str, local: &Path, progress: Progress) -> Result<()>;
     fn mkdir(&self, path: &str) -> Result<()>;
     fn rename(&self, from: &str, to: &str) -> Result<()>;

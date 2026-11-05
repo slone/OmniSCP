@@ -9,6 +9,7 @@ export type BackendErrorKind =
   | 'Config'
   | 'HostKeyUnknown'
   | 'HostKeyMismatch'
+  | 'ConnectionLost'
   | 'Io';
 
 export interface BackendError {

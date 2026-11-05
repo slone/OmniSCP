@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::config::{AuthMethod, Profile, credentials};
 use crate::error::OmniError;
@@ -12,16 +12,27 @@ use crate::protocols::sftp::{ConnectParams, SftpConnection};
 use crate::protocols::{
     FileEntry, Protocol, ProtocolType, remote_join, remote_parent, sort_entries, validate_file_name,
 };
-use crate::transfer::queue::{TransferQueue, TransferRequest};
+use crate::transfer::queue::{EventSink, PROGRESS_EVENT, TransferQueue, TransferRequest};
 use crate::transfer::{ConflictStrategy, TransferDirection};
 
 pub struct ActiveConnection {
-    conn: SftpConnection,
-    profile_name: String,
+    /// Locked for the duration of network calls, which can be long (recursive delete).
+    conn: Arc<Mutex<SftpConnection>>,
     transfers: TransferQueue,
 }
 
-/// Shared with blocking tasks, hence the `Arc`.
+impl ActiveConnection {
+    fn close(self) -> Result<(), OmniError> {
+        drop(self.transfers);
+        lock_conn(&self.conn).disconnect()
+    }
+}
+
+fn lock_conn(conn: &Mutex<SftpConnection>) -> MutexGuard<'_, SftpConnection> {
+    conn.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Never held across network I/O: sync commands take it on the main thread.
 #[derive(Default)]
 pub struct ConnectionState(Arc<Mutex<Option<ActiveConnection>>>);
 
@@ -49,9 +60,16 @@ pub fn list_local_dir(path: String) -> Result<Vec<FileEntry>, OmniError> {
 
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
+        let link_metadata = entry.metadata()?;
+        let is_symlink = link_metadata.is_symlink();
         let name = entry.file_name().to_string_lossy().into_owned();
         let full_path = entry.path();
+        // Describe the target of a symlink, unless it is dangling.
+        let metadata = if is_symlink {
+            std::fs::metadata(&full_path).unwrap_or(link_metadata)
+        } else {
+            link_metadata
+        };
         let is_dir = metadata.is_dir();
         let size = if is_dir { 0 } else { metadata.len() };
 
@@ -81,6 +99,7 @@ pub fn list_local_dir(path: String) -> Result<Vec<FileEntry>, OmniError> {
             name,
             path: full_path,
             is_dir,
+            is_symlink,
             size,
             modified,
             permissions,
@@ -208,6 +227,9 @@ pub async fn connect_sftp(
 
     // Connect outside the lock so other commands stay responsive and a failed
     // attempt leaves the current connection untouched.
+    let sink: EventSink = Arc::new(move |event| {
+        let _ = app_handle.emit(PROGRESS_EVENT, event);
+    });
     let (conn, initial_path) = run_blocking(move || {
         let mut conn = SftpConnection::new(&params);
         conn.connect()?;
@@ -217,9 +239,8 @@ pub async fn connect_sftp(
         };
         Ok((
             ActiveConnection {
-                conn,
-                profile_name: params.profile.name.clone(),
-                transfers: TransferQueue::start(app_handle, params),
+                conn: Arc::new(Mutex::new(conn)),
+                transfers: TransferQueue::start(sink, params),
             },
             initial_path,
         ))
@@ -227,8 +248,8 @@ pub async fn connect_sftp(
     .await?;
 
     let previous = lock(&state.0)?.replace(conn);
-    if let Some(mut previous) = previous {
-        let _ = run_blocking(move || previous.conn.disconnect()).await;
+    if let Some(previous) = previous {
+        let _ = run_blocking(move || previous.close()).await;
     }
 
     Ok(initial_path)
@@ -238,7 +259,7 @@ pub async fn connect_sftp(
 pub async fn disconnect_sftp(state: tauri::State<'_, ConnectionState>) -> Result<(), OmniError> {
     let previous = lock(&state.0)?.take();
     match previous {
-        Some(mut active) => run_blocking(move || active.conn.disconnect()).await,
+        Some(active) => run_blocking(move || active.close()).await,
         None => Ok(()),
     }
 }
@@ -248,30 +269,30 @@ pub async fn list_remote_dir(
     state: tauri::State<'_, ConnectionState>,
     path: String,
 ) -> Result<Vec<FileEntry>, OmniError> {
-    let shared = Arc::clone(&state.0);
-    run_blocking(move || {
-        let guard = lock(&shared)?;
-        let active = guard
-            .as_ref()
-            .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
-        active.conn.list_dir(&path)
-    })
-    .await
+    with_connection(&state, move |conn| conn.list_dir(&path)).await
 }
 
-/// Runs `f` on the active connection, off the main thread.
+/// Runs `f` on the active connection, off the main thread. A failure caused by
+/// a dead session is reported as such so the frontend can leave the connected state.
 async fn with_connection<T, F>(state: &ConnectionState, f: F) -> Result<T, OmniError>
 where
     T: Send + 'static,
     F: FnOnce(&SftpConnection) -> Result<T, OmniError> + Send + 'static,
 {
-    let shared = Arc::clone(&state.0);
-    run_blocking(move || {
-        let guard = lock(&shared)?;
+    let conn = {
+        let guard = lock(&state.0)?;
         let active = guard
             .as_ref()
             .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
-        f(&active.conn)
+        Arc::clone(&active.conn)
+    };
+    run_blocking(move || {
+        let conn = lock_conn(&conn);
+        f(&conn).map_err(|e| match e {
+            OmniError::Permission(_) | OmniError::Config(_) => e,
+            e if conn.is_alive() => e,
+            _ => OmniError::ConnectionLost,
+        })
     })
     .await
 }
@@ -395,17 +416,6 @@ pub fn cancel_transfer(state: tauri::State<'_, ConnectionState>, id: String) -> 
         active.transfers.cancel(&id);
     }
     Ok(())
-}
-
-#[tauri::command]
-pub fn get_connection_status(
-    state: tauri::State<'_, ConnectionState>,
-) -> Result<Option<String>, OmniError> {
-    let guard = lock(&state.0)?;
-    match guard.as_ref() {
-        Some(active) if active.conn.is_connected() => Ok(Some(active.profile_name.clone())),
-        _ => Ok(None),
-    }
 }
 
 fn lock(

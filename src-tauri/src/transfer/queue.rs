@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
 
 use crate::error::{OmniError, Result};
 use crate::protocols::sftp::{ConnectParams, SftpConnection};
@@ -29,6 +28,12 @@ pub struct TransferRequest {
     pub conflict: ConflictStrategy,
 }
 
+/// Receives every status change of every job.
+pub type EventSink = Arc<dyn Fn(TransferEvent) + Send + Sync>;
+
+/// How many problems are spelled out in a job's error message.
+const MAX_LISTED_PROBLEMS: usize = 5;
+
 #[derive(Clone, Serialize)]
 pub struct TransferEvent {
     pub id: String,
@@ -47,11 +52,11 @@ pub struct TransferQueue {
 }
 
 impl TransferQueue {
-    pub fn start(app: AppHandle, params: ConnectParams) -> Self {
+    pub fn start(sink: EventSink, params: ConnectParams) -> Self {
         let (sender, receiver) = mpsc::channel();
         let cancels: CancelFlags = Arc::default();
         let worker_cancels = Arc::clone(&cancels);
-        std::thread::spawn(move || run_worker(app, params, receiver, worker_cancels));
+        std::thread::spawn(move || run_worker(sink, params, receiver, worker_cancels));
         Self { sender, cancels }
     }
 
@@ -84,7 +89,7 @@ impl Drop for TransferQueue {
 }
 
 fn run_worker(
-    app: AppHandle,
+    sink: EventSink,
     params: ConnectParams,
     receiver: Receiver<TransferRequest>,
     cancels: CancelFlags,
@@ -101,13 +106,16 @@ fn run_worker(
             .unwrap_or_default();
 
         let mut job = Job {
-            app: &app,
+            sink: &sink,
             id: &request.id,
             cancel: &cancel,
             destination: None,
             total: 0,
             transferred: 0,
             last_emit: Instant::now(),
+            files_done: 0,
+            failures: Vec::new(),
+            skipped_links: Vec::new(),
         };
 
         let outcome = if cancel.load(Ordering::Relaxed) {
@@ -117,15 +125,9 @@ fn run_worker(
         };
 
         let (status, error) = match outcome {
-            Ok(status) => (status, None),
+            Ok(status) => (status, job.problem_summary()),
             Err(OmniError::Cancelled) => (TransferStatus::Cancelled, None),
-            Err(e) => {
-                // The session may be broken; reconnect for the next job.
-                if conn.as_ref().is_some_and(|c| !c.is_connected()) {
-                    conn = None;
-                }
-                (TransferStatus::Failed, Some(e.to_string()))
-            }
+            Err(e) => (TransferStatus::Failed, Some(e.to_string())),
         };
         job.emit(status, error);
 
@@ -144,6 +146,10 @@ fn ensure_connected<'a>(
     conn: &'a mut Option<SftpConnection>,
     params: &ConnectParams,
 ) -> Result<&'a SftpConnection> {
+    // The session may have died since the previous job.
+    if conn.as_ref().is_some_and(|c| !c.is_alive()) {
+        *conn = None;
+    }
     if conn.is_none() {
         let mut c = SftpConnection::new(params);
         c.connect()?;
@@ -153,28 +159,28 @@ fn ensure_connected<'a>(
 }
 
 struct Job<'a> {
-    app: &'a AppHandle,
+    sink: &'a EventSink,
     id: &'a str,
     cancel: &'a AtomicBool,
     destination: Option<String>,
     total: u64,
     transferred: u64,
     last_emit: Instant,
+    files_done: u64,
+    failures: Vec<String>,
+    skipped_links: Vec<String>,
 }
 
 impl Job<'_> {
     fn emit(&self, status: TransferStatus, error: Option<String>) {
-        let _ = self.app.emit(
-            PROGRESS_EVENT,
-            TransferEvent {
-                id: self.id.to_string(),
-                status,
-                destination: self.destination.clone(),
-                total_bytes: self.total,
-                transferred_bytes: self.transferred,
-                error,
-            },
-        );
+        (self.sink)(TransferEvent {
+            id: self.id.to_string(),
+            status,
+            destination: self.destination.clone(),
+            total_bytes: self.total,
+            transferred_bytes: self.transferred,
+            error,
+        });
     }
 
     /// Called after each copied chunk; throttles events and checks for cancellation.
@@ -195,6 +201,41 @@ impl Job<'_> {
         }
     }
 
+    /// Keeps going after a failed item, unless nothing further can succeed.
+    fn record_failure(&mut self, conn: &SftpConnection, err: OmniError) -> Result<()> {
+        if matches!(err, OmniError::Cancelled) || !conn.is_alive() {
+            return Err(err);
+        }
+        self.failures.push(err.to_string());
+        Ok(())
+    }
+
+    fn final_status(&self) -> TransferStatus {
+        if self.failures.is_empty() && self.skipped_links.is_empty() {
+            TransferStatus::Completed
+        } else if self.files_done == 0 && !self.failures.is_empty() {
+            TransferStatus::Failed
+        } else {
+            TransferStatus::CompletedWithWarnings
+        }
+    }
+
+    fn problem_summary(&self) -> Option<String> {
+        let skipped = self
+            .skipped_links
+            .iter()
+            .map(|path| format!("{path}: link to a folder, not followed"));
+        let problems: Vec<String> = self.failures.iter().cloned().chain(skipped).collect();
+        if problems.is_empty() {
+            return None;
+        }
+        let mut summary = problems[..problems.len().min(MAX_LISTED_PROBLEMS)].join("\n");
+        if problems.len() > MAX_LISTED_PROBLEMS {
+            summary.push_str(&format!("\n... and {} more", problems.len() - MAX_LISTED_PROBLEMS));
+        }
+        Some(summary)
+    }
+
     fn run(&mut self, conn: &SftpConnection, request: &TransferRequest) -> Result<TransferStatus> {
         match request.direction {
             TransferDirection::Upload => self.upload(conn, request),
@@ -208,6 +249,9 @@ impl Job<'_> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .ok_or_else(|| OmniError::Transfer(format!("Invalid source path {}", request.source)))?;
+        if is_local_dir_link(&source) {
+            return Err(link_not_followed(&request.source));
+        }
 
         let exists = |n: &str| conn.exists(&remote_join(&request.dest_dir, n));
         let name = match resolve_conflict(&name, request.conflict, exists) {
@@ -220,7 +264,7 @@ impl Job<'_> {
         self.total = local_tree_size(&source)?;
         self.emit(TransferStatus::InProgress, None);
         self.upload_tree(conn, &source, &dest)?;
-        Ok(TransferStatus::Completed)
+        Ok(self.final_status())
     }
 
     fn upload_tree(&mut self, conn: &SftpConnection, local: &Path, remote: &str) -> Result<()> {
@@ -233,22 +277,32 @@ impl Job<'_> {
                 conn.mkdir(remote)?;
             }
             for entry in std::fs::read_dir(local).map_err(|e| OmniError::io_context(local.display(), e))? {
-                let entry = entry?;
-                let child = remote_join(remote, &entry.file_name().to_string_lossy());
-                self.upload_tree(conn, &entry.path(), &child)?;
+                let copied = entry.map_err(OmniError::from).and_then(|entry| {
+                    let child = remote_join(remote, &entry.file_name().to_string_lossy());
+                    self.upload_tree(conn, &entry.path(), &child)
+                });
+                if let Err(e) = copied {
+                    self.record_failure(conn, e)?;
+                }
             }
             Ok(())
-        } else if meta.is_symlink() && std::fs::metadata(local).is_ok_and(|m| m.is_dir()) {
-            // Never follow directory symlinks: they can loop.
+        } else if is_local_dir_link(local) {
+            self.skipped_links.push(local.display().to_string());
             Ok(())
         } else {
-            conn.upload(local, remote, &mut |n| self.on_progress(n))
+            conn.upload(local, remote, &mut |n| self.on_progress(n))?;
+            self.files_done += 1;
+            Ok(())
         }
     }
 
     fn download(&mut self, conn: &SftpConnection, request: &TransferRequest) -> Result<TransferStatus> {
         let name = remote_file_name(&request.source).to_string();
         let dest_dir = PathBuf::from(&request.dest_dir);
+        let entry = conn.stat(&request.source)?;
+        if entry.is_symlink && entry.is_dir {
+            return Err(link_not_followed(&request.source));
+        }
 
         let exists = |n: &str| dest_dir.join(n).symlink_metadata().is_ok();
         let name = match resolve_conflict(&name, request.conflict, exists) {
@@ -258,11 +312,10 @@ impl Job<'_> {
         let dest = dest_dir.join(&name);
         self.destination = Some(dest.to_string_lossy().into_owned());
 
-        let entry = conn.stat(&request.source)?;
         self.total = remote_tree_size(conn, &request.source, entry.is_dir, entry.size)?;
         self.emit(TransferStatus::InProgress, None);
         self.download_tree(conn, &request.source, entry.is_dir, &dest)?;
-        Ok(TransferStatus::Completed)
+        Ok(self.final_status())
     }
 
     fn download_tree(&mut self, conn: &SftpConnection, remote: &str, is_dir: bool, local: &Path) -> Result<()> {
@@ -271,11 +324,19 @@ impl Job<'_> {
             std::fs::create_dir_all(local).map_err(|e| OmniError::io_context(local.display(), e))?;
             for entry in conn.list_dir(remote)? {
                 let child_remote = entry.path.to_string_lossy();
-                self.download_tree(conn, &child_remote, entry.is_dir, &local.join(&entry.name))?;
+                if entry.is_symlink && entry.is_dir {
+                    self.skipped_links.push(child_remote.into_owned());
+                } else if let Err(e) =
+                    self.download_tree(conn, &child_remote, entry.is_dir, &local.join(&entry.name))
+                {
+                    self.record_failure(conn, e)?;
+                }
             }
             Ok(())
         } else {
-            conn.download(remote, local, &mut |n| self.on_progress(n))
+            conn.download(remote, local, &mut |n| self.on_progress(n))?;
+            self.files_done += 1;
+            Ok(())
         }
     }
 }
@@ -293,6 +354,17 @@ fn resolve_conflict(name: &str, strategy: ConflictStrategy, exists: impl Fn(&str
     }
 }
 
+/// Links to directories are never followed: they can loop.
+fn is_local_dir_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink())
+        && std::fs::metadata(path).is_ok_and(|m| m.is_dir())
+}
+
+fn link_not_followed(path: &str) -> OmniError {
+    OmniError::Transfer(format!("{path} is a link to a folder, which is not followed"))
+}
+
+/// Unreadable subfolders only make the total an underestimate; copying them reports the error.
 fn local_tree_size(path: &Path) -> Result<u64> {
     let meta = std::fs::symlink_metadata(path).map_err(|e| OmniError::io_context(path.display(), e))?;
     if !meta.is_dir() {
@@ -303,19 +375,27 @@ fn local_tree_size(path: &Path) -> Result<u64> {
         });
     }
     let mut total = 0;
-    for entry in std::fs::read_dir(path).map_err(|e| OmniError::io_context(path.display(), e))? {
-        total += local_tree_size(&entry?.path())?;
+    for entry in std::fs::read_dir(path).map_err(|e| OmniError::io_context(path.display(), e))?.flatten() {
+        total += local_tree_size(&entry.path()).unwrap_or(0);
     }
     Ok(total)
 }
 
+/// Same as `local_tree_size`, unless the session died.
 fn remote_tree_size(conn: &SftpConnection, path: &str, is_dir: bool, size: u64) -> Result<u64> {
     if !is_dir {
         return Ok(size);
     }
     let mut total = 0;
     for entry in conn.list_dir(path)? {
-        total += remote_tree_size(conn, &entry.path.to_string_lossy(), entry.is_dir, entry.size)?;
+        if entry.is_symlink && entry.is_dir {
+            continue;
+        }
+        match remote_tree_size(conn, &entry.path.to_string_lossy(), entry.is_dir, entry.size) {
+            Ok(size) => total += size,
+            Err(e) if !conn.is_alive() => return Err(e),
+            Err(_) => {}
+        }
     }
     Ok(total)
 }

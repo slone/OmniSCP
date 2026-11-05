@@ -7,7 +7,8 @@ use ssh2::{CheckResult, ErrorCode, HashType, KnownHostFileKind, Session, Sftp};
 use crate::config::{AuthMethod, Profile};
 use crate::error::{OmniError, Result};
 use crate::protocols::{
-    CopyError, FileEntry, Progress, Protocol, copy_with_progress, format_permissions, sort_entries,
+    CopyError, FileEntry, Progress, Protocol, copy_with_progress, format_permissions, remote_join,
+    remote_parent, sort_entries, temp_file_name,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -79,6 +80,33 @@ impl SftpConnection {
             .realpath(Path::new(path))
             .map_err(|e| sftp_err(format!("realpath failed for {path}"), e))?;
         Ok(resolved.to_string_lossy().into_owned())
+    }
+
+    /// Builds an entry from `lstat` data, describing the target of a symlink.
+    fn to_entry(&self, path: PathBuf, lstat: &ssh2::FileStat) -> Result<FileEntry> {
+        if !lstat.file_type().is_symlink() {
+            return Ok(file_stat_to_entry(path, lstat, false));
+        }
+        // A dangling link has no target to describe.
+        let target = self.sftp()?.stat(&path).ok();
+        Ok(file_stat_to_entry(path, target.as_ref().unwrap_or(lstat), true))
+    }
+
+    /// Moves the finished temporary file onto `target`. SFTP v3 servers refuse to
+    /// rename over an existing file, so the old one is set aside until the new one is in place.
+    fn install_upload(&self, temp: &str, target: &str, target_exists: bool) -> Result<()> {
+        if !target_exists {
+            return self.rename(temp, target);
+        }
+        let backup = temp_path_beside(target);
+        self.rename(target, &backup)?;
+        if let Err(e) = self.rename(temp, target) {
+            let _ = self.rename(&backup, target);
+            return Err(e);
+        }
+        // The new file is in place; a leftover backup is not worth failing the transfer.
+        let _ = self.sftp()?.unlink(Path::new(&backup));
+        Ok(())
     }
 
     fn open_tcp(&self) -> Result<TcpStream> {
@@ -167,6 +195,13 @@ impl SftpConnection {
     }
 }
 
+fn temp_path_beside(remote: &str) -> String {
+    match remote_parent(remote) {
+        Some(parent) => remote_join(&parent, &temp_file_name()),
+        None => temp_file_name(),
+    }
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -214,7 +249,7 @@ fn base64_no_pad(bytes: &[u8]) -> String {
     out
 }
 
-fn file_stat_to_entry(path: PathBuf, stat: &ssh2::FileStat) -> FileEntry {
+fn file_stat_to_entry(path: PathBuf, stat: &ssh2::FileStat, is_symlink: bool) -> FileEntry {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -231,6 +266,7 @@ fn file_stat_to_entry(path: PathBuf, stat: &ssh2::FileStat) -> FileEntry {
         name,
         path,
         is_dir,
+        is_symlink,
         size: stat.size.unwrap_or(0),
         modified: stat.mtime.map(|t| t as i64),
         permissions,
@@ -322,12 +358,8 @@ impl Protocol for SftpConnection {
         Ok(())
     }
 
-    fn is_connected(&self) -> bool {
-        self.sftp.is_some()
-            && self
-                .session
-                .as_ref()
-                .is_some_and(|s| s.authenticated())
+    fn is_alive(&self) -> bool {
+        self.realpath(".").is_ok()
     }
 
     fn list_dir(&self, path: &str) -> Result<Vec<FileEntry>> {
@@ -336,10 +368,13 @@ impl Protocol for SftpConnection {
             .readdir(Path::new(path))
             .map_err(|e| sftp_err(format!("Failed to list directory {path}"), e))?;
 
-        let mut files: Vec<FileEntry> = entries
-            .into_iter()
-            .map(|(p, stat)| file_stat_to_entry(p, &stat))
-            .collect();
+        let mut files = Vec::with_capacity(entries.len());
+        for (joined, stat) in entries {
+            // ssh2 joins with the local separator, which would be `\` on Windows.
+            let name = joined.file_name().unwrap_or_default().to_string_lossy();
+            let entry_path = PathBuf::from(remote_join(path, &name));
+            files.push(self.to_entry(entry_path, &stat)?);
+        }
         sort_entries(&mut files);
 
         Ok(files)
@@ -350,7 +385,7 @@ impl Protocol for SftpConnection {
             .sftp()?
             .lstat(Path::new(path))
             .map_err(|e| sftp_err(format!("Failed to stat {path}"), e))?;
-        Ok(file_stat_to_entry(path.into(), &stat))
+        self.to_entry(path.into(), &stat)
     }
 
     fn mkdir(&self, path: &str) -> Result<()> {
@@ -385,18 +420,51 @@ impl Protocol for SftpConnection {
     }
 
     fn upload(&self, local: &Path, remote: &str, progress: Progress) -> Result<()> {
+        let sftp = self.sftp()?;
+        let existing = sftp.lstat(Path::new(remote)).ok();
+        if existing.as_ref().is_some_and(|s| s.is_dir()) {
+            return Err(OmniError::Transfer(format!("{remote} is a directory")));
+        }
+
         let mut local_file = std::fs::File::open(local)
             .map_err(|e| OmniError::io_context(format!("Failed to open {}", local.display()), e))?;
-        let mut remote_file = self
-            .sftp()?
-            .create(Path::new(remote))
-            .map_err(|e| sftp_err(format!("Failed to create remote file {remote}"), e))?;
+        let temp = temp_path_beside(remote);
+        let mut remote_file = sftp
+            .create(Path::new(&temp))
+            .map_err(|e| sftp_err(format!("Failed to create a temporary file for {remote}"), e))?;
 
-        copy_with_progress(&mut local_file, &mut remote_file, progress).map_err(|e| match e {
-            CopyError::Cancelled => OmniError::Cancelled,
-            CopyError::Read(e) => OmniError::io_context(format!("Failed to read {}", local.display()), e),
-            CopyError::Write(e) => OmniError::Transfer(format!("Failed to write {remote}: {e}")),
-        })
+        let result = copy_with_progress(&mut local_file, &mut remote_file, progress)
+            .map_err(|e| match e {
+                CopyError::Cancelled => OmniError::Cancelled,
+                CopyError::Read(e) => OmniError::io_context(format!("Failed to read {}", local.display()), e),
+                CopyError::Write(e) => OmniError::Transfer(format!("Failed to write {remote}: {e}")),
+            })
+            // Dropping the handle would swallow a failure to commit the last writes.
+            .and_then(|()| {
+                remote_file
+                    .close()
+                    .map_err(|e| OmniError::Transfer(format!("Failed to write {remote}: {e}")))
+            })
+            .and_then(|()| {
+                // A replaced file keeps its permissions; failing to copy them is not worth losing the upload.
+                if let Some(perm) = sftp.stat(Path::new(remote)).ok().and_then(|s| s.perm) {
+                    let stat = ssh2::FileStat {
+                        size: None,
+                        uid: None,
+                        gid: None,
+                        perm: Some(perm & 0o7777),
+                        atime: None,
+                        mtime: None,
+                    };
+                    let _ = sftp.setstat(Path::new(&temp), stat);
+                }
+                self.install_upload(&temp, remote, existing.is_some())
+            });
+
+        if result.is_err() {
+            let _ = sftp.unlink(Path::new(&temp));
+        }
+        result
     }
 
     fn download(&self, remote: &str, local: &Path, progress: Progress) -> Result<()> {
@@ -404,14 +472,33 @@ impl Protocol for SftpConnection {
             .sftp()?
             .open(Path::new(remote))
             .map_err(|e| sftp_err(format!("Failed to open remote file {remote}"), e))?;
-        let mut local_file = std::fs::File::create(local)
-            .map_err(|e| OmniError::io_context(format!("Failed to create {}", local.display()), e))?;
+        let temp = local.with_file_name(temp_file_name());
+        let mut local_file = std::fs::File::create(&temp)
+            .map_err(|e| OmniError::io_context(format!("Failed to create {}", temp.display()), e))?;
+        let write_err = |e| OmniError::io_context(format!("Failed to write {}", local.display()), e);
 
-        copy_with_progress(&mut remote_file, &mut local_file, progress).map_err(|e| match e {
-            CopyError::Cancelled => OmniError::Cancelled,
-            CopyError::Read(e) => OmniError::Transfer(format!("Failed to read {remote}: {e}")),
-            CopyError::Write(e) => OmniError::io_context(format!("Failed to write {}", local.display()), e),
-        })
+        let result = copy_with_progress(&mut remote_file, &mut local_file, progress)
+            .map_err(|e| match e {
+                CopyError::Cancelled => OmniError::Cancelled,
+                CopyError::Read(e) => OmniError::Transfer(format!("Failed to read {remote}: {e}")),
+                CopyError::Write(e) => write_err(e),
+            })
+            .and_then(|()| local_file.sync_all().map_err(write_err));
+        // Windows cannot rename or remove a file that is still open.
+        drop(local_file);
+
+        let result = result.and_then(|()| {
+            // A replaced file keeps its permissions; failing to copy them is not worth losing the download.
+            if let Ok(meta) = std::fs::metadata(local) {
+                let _ = std::fs::set_permissions(&temp, meta.permissions());
+            }
+            std::fs::rename(&temp, local).map_err(write_err)
+        });
+
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        result
     }
 }
 

@@ -73,6 +73,7 @@ export const useFileActionsStore = defineStore('fileActions', () => {
       await store.refresh();
     } catch (err) {
       useLogStore().addLog('Error', 'Nouveau dossier', 'Échec', `${name} — ${errorMessage(err)}`);
+      await useConnectionStore().handleConnectionLost(err);
     }
   }
 
@@ -88,6 +89,7 @@ export const useFileActionsStore = defineStore('fileActions', () => {
       store.selected = [target];
     } catch (err) {
       useLogStore().addLog('Error', 'Renommer', 'Échec', `${entry.path} — ${errorMessage(err)}`);
+      await useConnectionStore().handleConnectionLost(err);
     }
   }
 
@@ -101,6 +103,8 @@ export const useFileActionsStore = defineStore('fileActions', () => {
         useLogStore().addLog('Info', 'Supprimer', 'OK', entry.path);
       } catch (err) {
         useLogStore().addLog('Error', 'Supprimer', 'Échec', `${entry.path} — ${errorMessage(err)}`);
+        await useConnectionStore().handleConnectionLost(err);
+        if (!useConnectionStore().connected && side === 'remote') return;
       }
     }
     await store.refresh();

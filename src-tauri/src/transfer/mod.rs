@@ -13,6 +13,8 @@ pub enum TransferStatus {
     Pending,
     InProgress,
     Completed,
+    /// Part of a folder went through; some items failed or were left out.
+    CompletedWithWarnings,
     /// Destination already existed and the conflict strategy was Skip.
     Skipped,
     Cancelled,
