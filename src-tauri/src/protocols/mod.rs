@@ -193,6 +193,8 @@ pub trait Protocol: Send + Sync {
     fn download(&self, remote: &str, local: &Path, progress: Progress) -> Result<()>;
     fn mkdir(&self, path: &str) -> Result<()>;
     fn rename(&self, from: &str, to: &str) -> Result<()>;
+    /// Removes a directory only if it is empty.
+    fn remove_empty_dir(&self, path: &str) -> Result<()>;
     /// Deletes a file, or a directory and everything it contains.
     fn delete(&self, path: &str) -> Result<()>;
     fn stat(&self, path: &str) -> Result<FileEntry>;

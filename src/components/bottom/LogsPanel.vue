@@ -1,20 +1,70 @@
 <script setup lang="ts">
+import { nextTick, onMounted, ref, watch } from 'vue';
 import { useLogStore } from '../../stores/logs';
+import { errorMessage } from '../../utils/errors';
 
 const logStore = useLogStore();
 
+const list = ref<HTMLElement | null>(null);
+const confirmingClear = ref(false);
+const message = ref('');
+
+function scrollToEnd() {
+  nextTick(() => {
+    if (list.value) list.value.scrollTop = list.value.scrollHeight;
+  });
+}
+
+onMounted(scrollToEnd);
+watch(() => logStore.entries.length, scrollToEnd);
+
+// The journal keeps earlier sessions, so the time alone would be ambiguous.
 function formatTime(timestamp: number): string {
-  return new Date(timestamp * 1000).toLocaleTimeString('fr-FR', {
+  return new Date(timestamp * 1000).toLocaleString('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
   });
 }
+
+async function onExport() {
+  try {
+    message.value = `Exporté vers ${await logStore.exportToDownloads()}`;
+  } catch (err) {
+    message.value = `Échec de l'export : ${errorMessage(err)}`;
+  }
+}
+
+async function onClear() {
+  confirmingClear.value = false;
+  try {
+    await logStore.clear();
+    message.value = '';
+  } catch (err) {
+    message.value = `Échec de l'effacement : ${errorMessage(err)}`;
+  }
+}
 </script>
 
 <template>
   <div class="logs-panel">
-    <div class="log-entries">
+    <div class="logs-toolbar">
+      <span class="logs-message" :title="message">
+        <template v-if="logStore.saveError">Journal non enregistré : {{ logStore.saveError }}</template>
+        <template v-else>{{ message }}</template>
+      </span>
+      <button class="logs-btn" :disabled="logStore.entries.length === 0" @click="onExport">Exporter</button>
+      <template v-if="confirmingClear">
+        <button class="logs-btn logs-btn-danger" @click="onClear">Effacer tout le journal ?</button>
+        <button class="logs-btn" @click="confirmingClear = false">Annuler</button>
+      </template>
+      <button v-else class="logs-btn" :disabled="logStore.entries.length === 0" @click="confirmingClear = true">
+        Effacer
+      </button>
+    </div>
+    <div ref="list" class="log-entries">
       <div
         v-for="(entry, i) in logStore.entries"
         :key="i"
@@ -26,7 +76,7 @@ function formatTime(timestamp: number): string {
         </span>
         <span class="log-action">{{ entry.action }}</span>
         <span class="log-status">{{ entry.status }}</span>
-        <span v-if="entry.detail" class="log-detail">{{ entry.detail }}</span>
+        <span v-if="entry.detail" class="log-detail" :title="entry.detail">{{ entry.detail }}</span>
       </div>
     </div>
   </div>
@@ -34,10 +84,58 @@ function formatTime(timestamp: number): string {
 
 <style scoped>
 .logs-panel {
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  overflow-y: auto;
   font-family: var(--font-mono);
   font-size: 11px;
+}
+
+.logs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--color-border);
+  font-family: var(--font-sans);
+  color: var(--color-text-muted);
+}
+
+.logs-message {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logs-btn {
+  padding: 1px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: none;
+  color: var(--color-text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.logs-btn:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.logs-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.logs-btn-danger {
+  border-color: #b42318;
+  color: #f87171;
+}
+
+.log-entries {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .log-entry {

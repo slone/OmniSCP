@@ -9,6 +9,7 @@ import { useTransfersStore } from './transfers';
 export const useConnectionStore = defineStore('connection', () => {
   const connected = ref(false);
   const connecting = ref(false);
+  const profileId = ref<string | null>(null);
   const profileName = ref<string | null>(null);
   const currentPath = ref('');
   const files = ref<FileEntry[]>([]);
@@ -28,6 +29,7 @@ export const useConnectionStore = defineStore('connection', () => {
         trustedFingerprint,
       });
       connected.value = true;
+      profileId.value = profile.id;
       profileName.value = profile.name;
       logStore.addLog('Info', 'Connexion', 'OK', `Connecté à ${profile.name}`);
       await navigateTo(initialPath);
@@ -61,6 +63,7 @@ export const useConnectionStore = defineStore('connection', () => {
       useTransfersStore().cancelAllLocally();
       connected.value = false;
       connecting.value = false;
+      profileId.value = null;
       profileName.value = null;
       currentPath.value = '';
       files.value = [];
@@ -119,6 +122,7 @@ export const useConnectionStore = defineStore('connection', () => {
   return {
     connected,
     connecting,
+    profileId,
     profileName,
     currentPath,
     files,

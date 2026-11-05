@@ -3,6 +3,8 @@ import { useTransfersStore, type QueuedTransfer } from '../../stores/transfers';
 
 const transfers = useTransfersStore();
 
+const directionIcon = { Upload: '↑', Download: '↓', Sync: '⇄' };
+
 function statusLabel(status: string): string {
   const map: Record<string, string> = {
     Pending: 'En attente',
@@ -31,6 +33,14 @@ function canCancel(job: QueuedTransfer): boolean {
   <div class="transfer-queue">
     <div class="queue-toolbar">
       <span class="queue-count">{{ transfers.active.length }} en cours</span>
+      <div class="queue-spacer" />
+      <button
+        class="queue-btn"
+        :disabled="!transfers.jobs.some(transfers.canRetry)"
+        @click="transfers.retryAll"
+      >
+        Réessayer les échecs
+      </button>
       <button
         class="queue-btn"
         :disabled="transfers.jobs.length === transfers.active.length"
@@ -53,7 +63,7 @@ function canCancel(job: QueuedTransfer): boolean {
       <tbody>
         <tr v-for="job in transfers.jobs" :key="job.id" class="queue-row">
           <td>
-            <span class="direction-icon">{{ job.direction === 'Upload' ? '↑' : '↓' }}</span>
+            <span class="direction-icon">{{ directionIcon[job.direction] }}</span>
           </td>
           <td class="path-cell" :title="job.source">{{ job.source }}</td>
           <td class="path-cell" :title="job.destination">{{ job.destination }}</td>
@@ -77,6 +87,14 @@ function canCancel(job: QueuedTransfer): boolean {
           <td>
             <button v-if="canCancel(job)" class="queue-btn" title="Annuler" @click="transfers.cancel(job.id)">
               ✕
+            </button>
+            <button
+              v-else-if="transfers.canRetry(job)"
+              class="queue-btn"
+              title="Réessayer : seul ce qui manque est copié, sauf si vous aviez choisi d'écraser"
+              @click="transfers.retry(job)"
+            >
+              ↻
             </button>
           </td>
         </tr>
@@ -199,10 +217,14 @@ function canCancel(job: QueuedTransfer): boolean {
   color: #d1d5db;
 }
 
+.queue-spacer {
+  flex: 1;
+}
+
 .queue-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 4px;
   padding: 2px 8px;
   border-bottom: 1px solid var(--color-border);
   font-size: 11px;

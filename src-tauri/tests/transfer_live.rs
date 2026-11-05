@@ -6,13 +6,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use omniscp_lib::config::{AuthMethod, Profile};
 use omniscp_lib::protocols::sftp::{ConnectParams, SftpConnection};
 use omniscp_lib::protocols::{Protocol, ProtocolType};
-use omniscp_lib::transfer::queue::{TransferEvent, TransferQueue, TransferRequest};
+use omniscp_lib::sync::{self, SyncAction, SyncActionKind, SyncMode, SyncOptions, SyncPlan};
+use omniscp_lib::transfer::queue::{SyncRequest, TransferEvent, TransferQueue, TransferRequest};
 use omniscp_lib::transfer::{ConflictStrategy, TransferDirection, TransferStatus};
 
 struct Harness {
@@ -76,9 +78,31 @@ impl Harness {
                 source: source.into(),
                 dest_dir: dest_dir.into(),
                 conflict,
+                dest_name: None,
             })
             .unwrap();
         id
+    }
+
+    fn plan(&self, local_root: &Path, remote_root: &str, options: &SyncOptions) -> SyncPlan {
+        let cancel = AtomicBool::new(false);
+        let local = sync::scan_local(local_root, &options.excludes, &cancel).unwrap();
+        let remote = sync::scan_remote(&self.conn, remote_root, &options.excludes, &cancel).unwrap();
+        sync::build_plan(local, remote, options)
+    }
+
+    fn run_sync(&mut self, local_root: &Path, remote_root: &str, actions: Vec<SyncAction>) -> TransferEvent {
+        self.next_id += 1;
+        let id = self.next_id.to_string();
+        self.queue
+            .enqueue_sync(SyncRequest {
+                id: id.clone(),
+                local_root: local_root.to_str().unwrap().into(),
+                remote_root: remote_root.into(),
+                actions,
+            })
+            .unwrap();
+        self.wait_finished(&id)
     }
 
     fn wait_finished(&self, id: &str) -> TransferEvent {
@@ -282,5 +306,188 @@ fn survives_a_dropped_connection() {
     assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.error);
 
     h.conn.connect().unwrap();
+    h.cleanup();
+}
+
+fn options(mode: SyncMode, delete_orphans: bool) -> SyncOptions {
+    SyncOptions { mode, excludes: vec![], delete_orphans }
+}
+
+fn paths(plan: &SyncPlan) -> Vec<(&str, SyncActionKind)> {
+    plan.actions.iter().map(|a| (a.path.as_str(), a.kind)).collect()
+}
+
+#[test]
+#[ignore]
+fn sync_upload_then_nothing_left_to_do() {
+    let mut h = Harness::new("sync-up");
+    let base = h.base.clone();
+    let root = h.tmp.join("root");
+    write(&root.join("a.txt"), b"aaa");
+    write(&root.join("deep/er/b.txt"), b"bbb");
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    write(&root.join(".omniscp-1-0.part"), b"leftover");
+
+    let plan = h.plan(&root, &base, &options(SyncMode::Upload, false));
+    assert_eq!(paths(&plan), [
+        ("a.txt", SyncActionKind::Upload),
+        ("deep", SyncActionKind::CreateRemoteDir),
+        ("deep/er", SyncActionKind::CreateRemoteDir),
+        ("deep/er/b.txt", SyncActionKind::Upload),
+        ("empty", SyncActionKind::CreateRemoteDir),
+    ]);
+    let event = h.run_sync(&root, &base, plan.actions);
+    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.error);
+
+    // Dates were preserved, so nothing differs any more, in any mode.
+    assert!(h.plan(&root, &base, &options(SyncMode::Upload, false)).actions.is_empty());
+    assert!(h.plan(&root, &base, &options(SyncMode::Both, false)).actions.is_empty());
+    h.cleanup();
+}
+
+#[test]
+#[ignore]
+fn sync_download_creates_missing_parents_then_nothing_left_to_do() {
+    let mut h = Harness::new("sync-down");
+    let base = h.base.clone();
+    let seed = h.tmp.join("seed");
+    write(&seed.join("deep/b.txt"), b"bbb");
+    assert_eq!(h.run_sync(&seed, &base, h.plan(&seed, &base, &options(SyncMode::Upload, false)).actions).status, TransferStatus::Completed);
+
+    let root = h.tmp.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    // Only the file is ticked: its parent must be created anyway.
+    let plan = h.plan(&root, &base, &options(SyncMode::Download, false));
+    let only_file: Vec<SyncAction> = plan.actions.into_iter().filter(|a| a.kind == SyncActionKind::Download).collect();
+    assert_eq!(h.run_sync(&root, &base, only_file).status, TransferStatus::Completed);
+    assert_eq!(std::fs::read(root.join("deep/b.txt")).unwrap(), b"bbb");
+    assert!(h.plan(&root, &base, &options(SyncMode::Both, false)).actions.is_empty());
+    h.cleanup();
+}
+
+#[test]
+#[ignore]
+fn sync_deletes_only_when_asked_and_keeps_excluded_content() {
+    let mut h = Harness::new("sync-delete");
+    let base = h.base.clone();
+    let seed = h.tmp.join("seed");
+    write(&seed.join("keep.txt"), b"k");
+    write(&seed.join("gone.txt"), b"g");
+    write(&seed.join("olddir/x.txt"), b"x");
+    write(&seed.join("mixed/y.txt"), b"y");
+    write(&seed.join("mixed/secret.env"), b"s");
+    h.run_sync(&seed, &base, h.plan(&seed, &base, &options(SyncMode::Upload, false)).actions);
+
+    let root = h.tmp.join("root");
+    write(&root.join("keep.txt"), b"k");
+    let keep_time = std::fs::metadata(seed.join("keep.txt")).unwrap().modified().unwrap();
+    std::fs::File::options().write(true).open(root.join("keep.txt")).unwrap().set_modified(keep_time).unwrap();
+
+    assert!(h.plan(&root, &base, &options(SyncMode::Upload, false)).actions.is_empty());
+
+    let delete = SyncOptions { mode: SyncMode::Upload, excludes: vec!["*.env".into()], delete_orphans: true };
+    let plan = h.plan(&root, &base, &delete);
+    assert_eq!(paths(&plan), [
+        ("gone.txt", SyncActionKind::DeleteRemote),
+        ("mixed/y.txt", SyncActionKind::DeleteRemote),
+        ("olddir", SyncActionKind::DeleteRemote),
+        ("olddir/x.txt", SyncActionKind::DeleteRemote),
+    ]);
+    let event = h.run_sync(&root, &base, plan.actions);
+    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.error);
+
+    let mut names = h.remote_names(&base);
+    names.sort();
+    assert_eq!(names, ["keep.txt", "mixed"]);
+    assert_eq!(h.remote_names(&format!("{base}/mixed")), ["secret.env"]);
+    h.cleanup();
+}
+
+#[test]
+#[ignore]
+fn sync_leaves_files_changed_since_the_preview() {
+    let mut h = Harness::new("sync-changed");
+    let base = h.base.clone();
+    let root = h.tmp.join("root");
+    write(&root.join("a.txt"), b"old");
+    write(&root.join("b.txt"), b"old");
+    h.run_sync(&root, &base, h.plan(&root, &base, &options(SyncMode::Upload, false)).actions);
+
+    // Local changes, planned for upload...
+    std::thread::sleep(Duration::from_secs(3));
+    write(&root.join("a.txt"), b"local");
+    write(&root.join("b.txt"), b"local");
+    let plan = h.plan(&root, &base, &options(SyncMode::Upload, false));
+    assert_eq!(plan.actions.len(), 2);
+
+    // ...then someone else writes a.txt on the server before execution.
+    let other = h.tmp.join("other/a.txt");
+    write(&other, b"someone else");
+    h.conn.upload(&other, &format!("{base}/a.txt"), &mut |_| true).unwrap();
+
+    let event = h.run_sync(&root, &base, plan.actions);
+    assert_eq!(event.status, TransferStatus::CompletedWithWarnings);
+    assert!(event.error.unwrap().contains("a.txt"));
+
+    let back = h.tmp.join("back");
+    h.conn.download(&format!("{base}/a.txt"), &back, &mut |_| true).unwrap();
+    assert_eq!(std::fs::read(&back).unwrap(), b"someone else");
+    h.conn.download(&format!("{base}/b.txt"), &back, &mut |_| true).unwrap();
+    assert_eq!(std::fs::read(&back).unwrap(), b"local");
+    h.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore]
+fn sync_does_not_delete_what_it_could_not_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut h = Harness::new("sync-unreadable");
+    let base = h.base.clone();
+    let root = h.tmp.join("root");
+    write(&root.join("locked/a.txt"), b"a");
+    h.run_sync(&root, &base, h.plan(&root, &base, &options(SyncMode::Upload, false)).actions);
+
+    let locked = root.join("locked");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let plan = h.plan(&root, &base, &options(SyncMode::Upload, true));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(plan.actions.is_empty(), "{:?}", plan.actions);
+    assert_eq!(plan.problems.len(), 1);
+    assert!(plan.problems[0].contains("locked"));
+    h.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore]
+fn retry_copies_only_what_is_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut h = Harness::new("retry");
+    let base = h.base.clone();
+    let source = h.tmp.join("tree");
+    write(&source.join("good.txt"), b"first");
+    write(&source.join("locked.txt"), b"late");
+    let locked = source.join("locked.txt");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert_eq!(h.upload(&source, &base, ConflictStrategy::Skip).status, TransferStatus::CompletedWithWarnings);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    // Changed locally since: the retry must not overwrite what is there.
+    write(&source.join("good.txt"), b"second");
+    let event = h.upload(&source, &base, ConflictStrategy::Merge);
+    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.error);
+
+    let back = h.tmp.join("back");
+    h.conn.download(&format!("{base}/tree/good.txt"), &back, &mut |_| true).unwrap();
+    assert_eq!(std::fs::read(&back).unwrap(), b"first");
+    h.conn.download(&format!("{base}/tree/locked.txt"), &back, &mut |_| true).unwrap();
+    assert_eq!(std::fs::read(&back).unwrap(), b"late");
+
+    // Nothing missing any more.
+    assert_eq!(h.upload(&source, &base, ConflictStrategy::Merge).status, TransferStatus::Skipped);
     h.cleanup();
 }

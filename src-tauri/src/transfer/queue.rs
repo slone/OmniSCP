@@ -12,7 +12,8 @@ use serde::Serialize;
 
 use crate::error::{OmniError, Result};
 use crate::protocols::sftp::{ConnectParams, SftpConnection};
-use crate::protocols::{Protocol, remote_file_name, remote_join, unique_name};
+use crate::protocols::{Protocol, remote_file_name, remote_join, remote_parent, unique_name};
+use crate::sync::{self, SyncAction, SyncActionKind};
 use crate::transfer::{ConflictStrategy, TransferDirection, TransferStatus};
 
 pub const PROGRESS_EVENT: &str = "transfer-progress";
@@ -26,6 +27,30 @@ pub struct TransferRequest {
     /// Directory receiving the item, on the other side.
     pub dest_dir: String,
     pub conflict: ConflictStrategy,
+    /// Name to use at the destination, when retrying a job that already chose one.
+    pub dest_name: Option<String>,
+}
+
+/// Executes actions of a plan the user reviewed; shows as one job in the queue.
+pub struct SyncRequest {
+    pub id: String,
+    pub local_root: String,
+    pub remote_root: String,
+    pub actions: Vec<SyncAction>,
+}
+
+enum Request {
+    Transfer(TransferRequest),
+    Sync(SyncRequest),
+}
+
+impl Request {
+    fn id(&self) -> &str {
+        match self {
+            Request::Transfer(r) => &r.id,
+            Request::Sync(r) => &r.id,
+        }
+    }
 }
 
 /// Receives every status change of every job.
@@ -47,7 +72,7 @@ pub struct TransferEvent {
 type CancelFlags = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
 
 pub struct TransferQueue {
-    sender: Sender<TransferRequest>,
+    sender: Sender<Request>,
     cancels: CancelFlags,
 }
 
@@ -61,8 +86,16 @@ impl TransferQueue {
     }
 
     pub fn enqueue(&self, request: TransferRequest) -> Result<()> {
+        self.send(Request::Transfer(request))
+    }
+
+    pub fn enqueue_sync(&self, request: SyncRequest) -> Result<()> {
+        self.send(Request::Sync(request))
+    }
+
+    fn send(&self, request: Request) -> Result<()> {
         self.flags()
-            .insert(request.id.clone(), Arc::new(AtomicBool::new(false)));
+            .insert(request.id().to_string(), Arc::new(AtomicBool::new(false)));
         self.sender
             .send(request)
             .map_err(|_| OmniError::Transfer("Transfer worker is not running".into()))
@@ -91,7 +124,7 @@ impl Drop for TransferQueue {
 fn run_worker(
     sink: EventSink,
     params: ConnectParams,
-    receiver: Receiver<TransferRequest>,
+    receiver: Receiver<Request>,
     cancels: CancelFlags,
 ) {
     let mut conn: Option<SftpConnection> = None;
@@ -101,19 +134,21 @@ fn run_worker(
         let cancel = cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&request.id)
+            .get(request.id())
             .cloned()
             .unwrap_or_default();
 
         let mut job = Job {
             sink: &sink,
-            id: &request.id,
+            id: request.id(),
             cancel: &cancel,
             destination: None,
             total: 0,
             transferred: 0,
             last_emit: Instant::now(),
             files_done: 0,
+            already_present: 0,
+            merge: false,
             failures: Vec::new(),
             skipped_links: Vec::new(),
         };
@@ -134,7 +169,7 @@ fn run_worker(
         cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&request.id);
+            .remove(request.id());
     }
 
     if let Some(mut c) = conn {
@@ -167,6 +202,9 @@ struct Job<'a> {
     transferred: u64,
     last_emit: Instant,
     files_done: u64,
+    /// Files a `Merge` found already at the destination.
+    already_present: u64,
+    merge: bool,
     failures: Vec<String>,
     skipped_links: Vec<String>,
 }
@@ -212,7 +250,11 @@ impl Job<'_> {
 
     fn final_status(&self) -> TransferStatus {
         if self.failures.is_empty() && self.skipped_links.is_empty() {
-            TransferStatus::Completed
+            if self.files_done == 0 && self.already_present > 0 {
+                TransferStatus::Skipped
+            } else {
+                TransferStatus::Completed
+            }
         } else if self.files_done == 0 && !self.failures.is_empty() {
             TransferStatus::Failed
         } else {
@@ -236,11 +278,106 @@ impl Job<'_> {
         Some(summary)
     }
 
-    fn run(&mut self, conn: &SftpConnection, request: &TransferRequest) -> Result<TransferStatus> {
-        match request.direction {
-            TransferDirection::Upload => self.upload(conn, request),
-            TransferDirection::Download => self.download(conn, request),
+    fn run(&mut self, conn: &SftpConnection, request: &Request) -> Result<TransferStatus> {
+        match request {
+            Request::Sync(request) => self.sync(conn, request),
+            Request::Transfer(request) => {
+                self.merge = request.conflict == ConflictStrategy::Merge;
+                match request.direction {
+                    TransferDirection::Upload => self.upload(conn, request),
+                    TransferDirection::Download => self.download(conn, request),
+                }
+            }
         }
+    }
+
+    fn sync(&mut self, conn: &SftpConnection, request: &SyncRequest) -> Result<TransferStatus> {
+        self.destination = Some(request.remote_root.clone());
+        self.total = request
+            .actions
+            .iter()
+            .map(|a| match a.kind {
+                SyncActionKind::Upload => a.local.map_or(0, |m| m.size),
+                SyncActionKind::Download => a.remote.map_or(0, |m| m.size),
+                _ => 0,
+            })
+            .sum();
+        self.emit(TransferStatus::InProgress, None);
+
+        // Shortest paths first to create parents; deletes come last, deepest first,
+        // so a folder is empty by the time it is removed.
+        let is_delete = |a: &SyncAction| matches!(a.kind, SyncActionKind::DeleteLocal | SyncActionKind::DeleteRemote);
+        let (mut deletes, mut others): (Vec<&SyncAction>, Vec<&SyncAction>) =
+            request.actions.iter().partition(|a| is_delete(a));
+        others.sort_by_key(|a| a.path.matches('/').count());
+        deletes.sort_by_key(|a| std::cmp::Reverse(a.path.matches('/').count()));
+
+        for action in others.into_iter().chain(deletes) {
+            self.check_cancel()?;
+            if let Err(e) = self.sync_action(conn, request, action) {
+                self.record_failure(conn, e)?;
+            }
+        }
+        Ok(self.final_status())
+    }
+
+    fn sync_action(&mut self, conn: &SftpConnection, request: &SyncRequest, action: &SyncAction) -> Result<()> {
+        let local = Path::new(&request.local_root).join(&action.path);
+        let remote = remote_join(&request.remote_root, &action.path);
+        let changed = || OmniError::Transfer(format!("{}: changed since the preview, left untouched", action.path));
+
+        match action.kind {
+            SyncActionKind::Upload => {
+                if !sync::unchanged_since_preview(action.remote, sync::remote_meta(conn, &remote)) {
+                    return Err(changed());
+                }
+                ensure_remote_parents(conn, &request.remote_root, &remote)?;
+                conn.upload(&local, &remote, &mut |n| self.on_progress(n))?;
+            }
+            SyncActionKind::Download => {
+                if !sync::unchanged_since_preview(action.local, sync::local_meta(&local)) {
+                    return Err(changed());
+                }
+                if let Some(parent) = local.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| OmniError::io_context(parent.display(), e))?;
+                }
+                conn.download(&remote, &local, &mut |n| self.on_progress(n))?;
+            }
+            SyncActionKind::CreateRemoteDir => {
+                ensure_remote_parents(conn, &request.remote_root, &remote)?;
+                if !conn.exists(&remote) {
+                    conn.mkdir(&remote)?;
+                }
+            }
+            SyncActionKind::CreateLocalDir => {
+                std::fs::create_dir_all(&local).map_err(|e| OmniError::io_context(local.display(), e))?;
+            }
+            SyncActionKind::DeleteRemote => {
+                if !sync::unchanged_since_preview(action.remote, sync::remote_meta(conn, &remote)) {
+                    return Err(changed());
+                }
+                if action.remote.is_some_and(|m| m.is_dir) {
+                    conn.remove_empty_dir(&remote)?;
+                } else {
+                    conn.delete(&remote)?;
+                }
+            }
+            SyncActionKind::DeleteLocal => {
+                if !sync::unchanged_since_preview(action.local, sync::local_meta(&local)) {
+                    return Err(changed());
+                }
+                let removed = if action.local.is_some_and(|m| m.is_dir) {
+                    std::fs::remove_dir(&local)
+                } else {
+                    std::fs::remove_file(&local)
+                };
+                removed.map_err(|e| OmniError::io_context(local.display(), e))?;
+            }
+            // The preview turns a resolved conflict into a copy; anything left is not to be touched.
+            SyncActionKind::Conflict => return Ok(()),
+        }
+        self.files_done += 1;
+        Ok(())
     }
 
     fn upload(&mut self, conn: &SftpConnection, request: &TransferRequest) -> Result<TransferStatus> {
@@ -252,6 +389,7 @@ impl Job<'_> {
         if is_local_dir_link(&source) {
             return Err(link_not_followed(&request.source));
         }
+        let name = request.dest_name.clone().unwrap_or(name);
 
         let exists = |n: &str| conn.exists(&remote_join(&request.dest_dir, n));
         let name = match resolve_conflict(&name, request.conflict, exists) {
@@ -290,6 +428,11 @@ impl Job<'_> {
             self.skipped_links.push(local.display().to_string());
             Ok(())
         } else {
+            if self.merge && conn.exists(remote) {
+                self.already_present += 1;
+                self.transferred += meta.len();
+                return Ok(());
+            }
             conn.upload(local, remote, &mut |n| self.on_progress(n))?;
             self.files_done += 1;
             Ok(())
@@ -297,7 +440,10 @@ impl Job<'_> {
     }
 
     fn download(&mut self, conn: &SftpConnection, request: &TransferRequest) -> Result<TransferStatus> {
-        let name = remote_file_name(&request.source).to_string();
+        let name = request
+            .dest_name
+            .clone()
+            .unwrap_or_else(|| remote_file_name(&request.source).to_string());
         let dest_dir = PathBuf::from(&request.dest_dir);
         let entry = conn.stat(&request.source)?;
         if entry.is_symlink && entry.is_dir {
@@ -334,6 +480,11 @@ impl Job<'_> {
             }
             Ok(())
         } else {
+            if self.merge && local.symlink_metadata().is_ok() {
+                self.already_present += 1;
+                self.transferred += std::fs::metadata(local).map_or(0, |m| m.len());
+                return Ok(());
+            }
             conn.download(remote, local, &mut |n| self.on_progress(n))?;
             self.files_done += 1;
             Ok(())
@@ -347,11 +498,21 @@ fn resolve_conflict(name: &str, strategy: ConflictStrategy, exists: impl Fn(&str
         return Some(name.to_string());
     }
     match strategy {
-        ConflictStrategy::Overwrite => Some(name.to_string()),
+        ConflictStrategy::Overwrite | ConflictStrategy::Merge => Some(name.to_string()),
         ConflictStrategy::Rename => Some(unique_name(name, exists)),
         // The frontend resolves "Ask" before enqueueing; never overwrite silently.
         ConflictStrategy::Skip | ConflictStrategy::Ask => None,
     }
+}
+
+/// Creates the folders missing between the sync root and `remote`.
+fn ensure_remote_parents(conn: &SftpConnection, root: &str, remote: &str) -> Result<()> {
+    let Some(parent) = remote_parent(remote) else { return Ok(()) };
+    if parent.len() <= root.len() || conn.exists(&parent) {
+        return Ok(());
+    }
+    ensure_remote_parents(conn, root, &parent)?;
+    conn.mkdir(&parent)
 }
 
 /// Links to directories are never followed: they can loop.
@@ -412,5 +573,6 @@ mod tests {
         assert_eq!(resolve_conflict("a.txt", ConflictStrategy::Ask, taken), None);
         assert_eq!(resolve_conflict("a.txt", ConflictStrategy::Overwrite, taken), Some("a.txt".into()));
         assert_eq!(resolve_conflict("a.txt", ConflictStrategy::Rename, taken), Some("a (1).txt".into()));
+        assert_eq!(resolve_conflict("a.txt", ConflictStrategy::Merge, taken), Some("a.txt".into()));
     }
 }

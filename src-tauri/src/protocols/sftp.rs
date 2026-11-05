@@ -1,6 +1,6 @@
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use ssh2::{CheckResult, ErrorCode, HashType, KnownHostFileKind, Session, Sftp};
 
@@ -400,6 +400,12 @@ impl Protocol for SftpConnection {
             .map_err(|e| sftp_err(format!("Failed to rename {from} -> {to}"), e))
     }
 
+    fn remove_empty_dir(&self, path: &str) -> Result<()> {
+        self.sftp()?
+            .rmdir(Path::new(path))
+            .map_err(|e| sftp_err(format!("Failed to remove directory {path}"), e))
+    }
+
     fn delete(&self, path: &str) -> Result<()> {
         let sftp = self.sftp()?;
         // lstat: a symlink to a directory is removed as a link, never followed.
@@ -446,18 +452,17 @@ impl Protocol for SftpConnection {
                     .map_err(|e| OmniError::Transfer(format!("Failed to write {remote}: {e}")))
             })
             .and_then(|()| {
-                // A replaced file keeps its permissions; failing to copy them is not worth losing the upload.
-                if let Some(perm) = sftp.stat(Path::new(remote)).ok().and_then(|s| s.perm) {
-                    let stat = ssh2::FileStat {
-                        size: None,
-                        uid: None,
-                        gid: None,
-                        perm: Some(perm & 0o7777),
-                        atime: None,
-                        mtime: None,
-                    };
-                    let _ = sftp.setstat(Path::new(&temp), stat);
-                }
+                // Keep the source's date (sync compares them) and, for a replaced file, its
+                // permissions. Failing to set them is not worth losing the upload.
+                let mtime = local_file
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+                let perm = sftp.stat(Path::new(remote)).ok().and_then(|s| s.perm).map(|p| p & 0o7777);
+                let stat = ssh2::FileStat { size: None, uid: None, gid: None, perm, atime: mtime, mtime };
+                let _ = sftp.setstat(Path::new(&temp), stat);
                 self.install_upload(&temp, remote, existing.is_some())
             });
 
@@ -483,7 +488,13 @@ impl Protocol for SftpConnection {
                 CopyError::Read(e) => OmniError::Transfer(format!("Failed to read {remote}: {e}")),
                 CopyError::Write(e) => write_err(e),
             })
-            .and_then(|()| local_file.sync_all().map_err(write_err));
+            .and_then(|()| {
+                // Keep the source's date, which sync compares; not worth losing the download over.
+                if let Some(mtime) = remote_file.stat().ok().and_then(|s| s.mtime) {
+                    let _ = local_file.set_modified(UNIX_EPOCH + Duration::from_secs(mtime));
+                }
+                local_file.sync_all().map_err(write_err)
+            });
         // Windows cannot rename or remove a file that is still open.
         drop(local_file);
 

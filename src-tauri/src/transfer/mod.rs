@@ -27,6 +27,9 @@ pub enum ConflictStrategy {
     Skip,
     Rename,
     Ask,
+    /// Copies only what is missing, inside an existing folder too. Transfers
+    /// are atomic, so anything already at the destination is complete.
+    Merge,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

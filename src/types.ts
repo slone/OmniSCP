@@ -47,7 +47,7 @@ export type TransferStatus =
   | 'Cancelled'
   | 'Failed';
 
-export type ConflictStrategy = 'Overwrite' | 'Skip' | 'Rename' | 'Ask';
+export type ConflictStrategy = 'Overwrite' | 'Skip' | 'Rename' | 'Ask' | 'Merge';
 
 export interface TransferJob {
   id: string;
@@ -71,6 +71,46 @@ export interface TransferEvent {
 }
 
 export type PaneSide = 'local' | 'remote';
+
+export type SyncMode = 'Upload' | 'Download' | 'Both';
+
+export type SyncActionKind =
+  | 'Upload'
+  | 'Download'
+  | 'CreateRemoteDir'
+  | 'CreateLocalDir'
+  | 'DeleteRemote'
+  | 'DeleteLocal'
+  | 'Conflict';
+
+export type SyncReason =
+  | 'New'
+  | 'SourceNewer'
+  | 'TargetNewer'
+  | 'SameDateDifferentSize'
+  | 'TypeMismatch'
+  | 'Orphan';
+
+export interface EntryMeta {
+  is_dir: boolean;
+  size: number;
+  modified: number | null;
+}
+
+export interface SyncAction {
+  path: string;
+  kind: SyncActionKind;
+  reason: SyncReason;
+  local: EntryMeta | null;
+  remote: EntryMeta | null;
+  selected: boolean;
+}
+
+export interface SyncPlan {
+  actions: SyncAction[];
+  problems: string[];
+  skipped_links: string[];
+}
 
 export type LogLevel = 'Debug' | 'Info' | 'Warning' | 'Error';
 

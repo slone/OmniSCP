@@ -14,7 +14,7 @@ export type FileDialog =
   | { type: 'delete'; side: PaneSide; entries: FileEntry[] }
   | { type: 'conflict'; name: string; remaining: number };
 
-export type ConflictChoice = Exclude<ConflictStrategy, 'Ask'> | 'Cancel';
+export type ConflictChoice = Exclude<ConflictStrategy, 'Ask' | 'Merge'> | 'Cancel';
 
 export const useFileActionsStore = defineStore('fileActions', () => {
   const activePane = ref<PaneSide>('local');

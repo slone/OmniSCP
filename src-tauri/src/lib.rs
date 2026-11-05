@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod logging;
 pub mod protocols;
+pub mod sync;
 pub mod transfer;
 
 use commands::ConnectionState;
@@ -30,6 +31,13 @@ pub fn run() {
             commands::delete_local,
             commands::enqueue_transfer,
             commands::cancel_transfer,
+            commands::compare_sync,
+            commands::cancel_sync_compare,
+            commands::start_sync,
+            commands::append_log,
+            commands::load_logs,
+            commands::clear_logs,
+            commands::export_logs,
             commands::set_saved_password,
             commands::has_saved_password,
         ])

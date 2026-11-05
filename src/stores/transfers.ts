@@ -2,19 +2,23 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { ConflictStrategy, TransferDirection, TransferEvent, TransferJob } from '../types';
+import type { ConflictStrategy, SyncAction, TransferDirection, TransferEvent, TransferJob } from '../types';
 import { useLogStore } from './logs';
 import { useLocalFilesStore } from './localFiles';
 import { useConnectionStore } from './connection';
 import { errorMessage } from '../utils/errors';
 
-export interface QueuedTransfer extends TransferJob {
+export interface QueuedTransfer extends Omit<TransferJob, 'direction'> {
+  direction: TransferDirection | 'Sync';
   /// Directory the item is copied into, used to refresh the matching pane.
   dest_dir: string;
+  /// A retry must go to the same server.
+  profile_id: string | null;
   error?: string;
 }
 
 const FINISHED = new Set(['Completed', 'CompletedWithWarnings', 'Skipped', 'Cancelled', 'Failed']);
+const RETRYABLE = new Set(['CompletedWithWarnings', 'Cancelled', 'Failed']);
 
 export const useTransfersStore = defineStore('transfers', () => {
   const jobs = ref<QueuedTransfer[]>([]);
@@ -52,7 +56,7 @@ export const useTransfersStore = defineStore('transfers', () => {
 
   function onFinished(job: QueuedTransfer) {
     const logStore = useLogStore();
-    const action = job.direction === 'Upload' ? 'Upload' : 'Download';
+    const action = job.direction === 'Sync' ? 'Synchronisation' : job.direction;
     switch (job.status) {
       case 'Completed':
         logStore.addLog('Info', action, 'OK', `${job.source} → ${job.destination}`);
@@ -71,6 +75,13 @@ export const useTransfersStore = defineStore('transfers', () => {
         break;
     }
 
+    if (job.direction === 'Sync') {
+      // Even a stopped sync may have changed both sides.
+      useLocalFilesStore().refresh();
+      useConnectionStore().refresh();
+      return;
+    }
+
     // Show the new files if the destination directory is on screen.
     const pane = job.direction === 'Upload' ? useConnectionStore() : useLocalFilesStore();
     const wroteFiles = job.status === 'Completed' || job.status === 'CompletedWithWarnings';
@@ -84,6 +95,7 @@ export const useTransfersStore = defineStore('transfers', () => {
     source: string,
     destDir: string,
     conflict: ConflictStrategy,
+    destName?: string,
   ) {
     await ensureListener();
     try {
@@ -92,25 +104,81 @@ export const useTransfersStore = defineStore('transfers', () => {
         source,
         destDir,
         conflict,
+        destName,
       });
-      jobs.value.push({
-        id,
-        source,
-        destination: destDir,
-        dest_dir: destDir,
-        direction,
-        status: 'Pending',
-        total_bytes: 0,
-        transferred_bytes: 0,
-        conflict_strategy: conflict,
-      });
-      const buffered = early.get(id);
-      if (buffered) {
-        early.delete(id);
-        onProgress(buffered);
-      }
+      track(id, direction, source, destDir, conflict);
+      return true;
     } catch (err) {
       useLogStore().addLog('Error', direction, 'Échec', `${source} — ${errorMessage(err)}`);
+      return false;
+    }
+  }
+
+  async function enqueueSync(localRoot: string, remoteRoot: string, actions: SyncAction[]) {
+    await ensureListener();
+    try {
+      const id = await invoke<string>('start_sync', { localRoot, remoteRoot, actions });
+      track(id, 'Sync', localRoot, remoteRoot, 'Overwrite');
+    } catch (err) {
+      useLogStore().addLog('Error', 'Synchronisation', 'Échec', `${localRoot} — ${errorMessage(err)}`);
+    }
+  }
+
+  function track(
+    id: string,
+    direction: QueuedTransfer['direction'],
+    source: string,
+    destDir: string,
+    conflict: ConflictStrategy,
+  ) {
+    jobs.value.push({
+      id,
+      source,
+      destination: destDir,
+      dest_dir: destDir,
+      direction,
+      profile_id: useConnectionStore().profileId,
+      status: 'Pending',
+      total_bytes: 0,
+      transferred_bytes: 0,
+      conflict_strategy: conflict,
+    });
+    const buffered = early.get(id);
+    if (buffered) {
+      early.delete(id);
+      onProgress(buffered);
+    }
+  }
+
+  /// A sync is not retried: it should go through a new comparison and preview.
+  function canRetry(job: QueuedTransfer) {
+    const connection = useConnectionStore();
+    return (
+      job.direction !== 'Sync' &&
+      RETRYABLE.has(job.status) &&
+      connection.connected &&
+      job.profile_id === connection.profileId
+    );
+  }
+
+  /// Picks up where the job stopped: an overwrite the user approved stays one;
+  /// otherwise only what is missing is copied, to the name the job already chose.
+  async function retry(job: QueuedTransfer) {
+    if (!canRetry(job) || job.direction === 'Sync') return;
+    const destName =
+      job.destination !== job.dest_dir ? job.destination.split(/[\\/]/).pop() : undefined;
+    const strategy =
+      destName === undefined || job.conflict_strategy === 'Overwrite'
+        ? job.conflict_strategy
+        : 'Merge';
+    if (await enqueue(job.direction, job.source, job.dest_dir, strategy, destName)) {
+      jobs.value = jobs.value.filter((j) => j.id !== job.id);
+    }
+  }
+
+  async function retryAll() {
+    for (const job of jobs.value.filter(canRetry)) {
+      await retry(job);
     }
   }
 
@@ -129,5 +197,16 @@ export const useTransfersStore = defineStore('transfers', () => {
     }
   }
 
-  return { jobs, active, enqueue, cancel, clearFinished, cancelAllLocally };
+  return {
+    jobs,
+    active,
+    enqueue,
+    enqueueSync,
+    canRetry,
+    retry,
+    retryAll,
+    cancel,
+    clearFinished,
+    cancelAllLocally,
+  };
 });

@@ -6,6 +6,8 @@ import { useConnectionStore } from '../stores/connection';
 import { useLogStore } from '../stores/logs';
 import PasswordDialog from './PasswordDialog.vue';
 import HostKeyDialog from './HostKeyDialog.vue';
+import SyncDialog from './sync/SyncDialog.vue';
+import { useLocalFilesStore } from '../stores/localFiles';
 import { isBackendError } from '../utils/errors';
 import { useFileActionsStore } from '../stores/fileActions';
 import type { Profile } from '../types';
@@ -14,6 +16,9 @@ const profileStore = useProfilesStore();
 const connectionStore = useConnectionStore();
 const logStore = useLogStore();
 const actions = useFileActionsStore();
+const localFiles = useLocalFilesStore();
+
+const showSync = ref(false);
 
 const showPasswordDialog = ref(false);
 const passwordPromptLabel = ref('Mot de passe');
@@ -169,6 +174,15 @@ function onDisconnect() {
         <span class="icon">&darr;</span>
         Download
       </button>
+      <button
+        class="toolbar-btn"
+        title="Comparer et synchroniser le dossier local et le dossier distant affichés"
+        :disabled="!connectionStore.connected || !connectionStore.currentPath || !localFiles.currentPath"
+        @click="showSync = true"
+      >
+        <span class="icon">&#8644;</span>
+        Synchroniser
+      </button>
     </div>
 
     <div class="toolbar-spacer" />
@@ -179,6 +193,8 @@ function onDisconnect() {
       </button>
     </div>
   </div>
+
+  <SyncDialog v-if="showSync" @close="showSync = false" />
 
   <PasswordDialog
     v-if="showPasswordDialog"

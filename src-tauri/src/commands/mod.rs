@@ -2,27 +2,34 @@
 // Commands are registered in lib.rs via tauri::generate_handler![].
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tauri::{Emitter, Manager};
 
 use crate::config::{AuthMethod, Profile, credentials};
 use crate::error::OmniError;
+use crate::logging::{self, LogEntry};
 use crate::protocols::sftp::{ConnectParams, SftpConnection};
 use crate::protocols::{
     FileEntry, Protocol, ProtocolType, remote_join, remote_parent, sort_entries, validate_file_name,
 };
-use crate::transfer::queue::{EventSink, PROGRESS_EVENT, TransferQueue, TransferRequest};
+use crate::sync::{self, SyncAction, SyncOptions, SyncPlan};
+use crate::transfer::queue::{EventSink, PROGRESS_EVENT, SyncRequest, TransferQueue, TransferRequest};
 use crate::transfer::{ConflictStrategy, TransferDirection};
 
 pub struct ActiveConnection {
     /// Locked for the duration of network calls, which can be long (recursive delete).
     conn: Arc<Mutex<SftpConnection>>,
     transfers: TransferQueue,
+    /// For sessions opened on the side, such as long sync scans.
+    params: ConnectParams,
+    cancel_compare: Arc<AtomicBool>,
 }
 
 impl ActiveConnection {
     fn close(self) -> Result<(), OmniError> {
+        self.cancel_compare.store(true, Ordering::Relaxed);
         drop(self.transfers);
         lock_conn(&self.conn).disconnect()
     }
@@ -240,7 +247,9 @@ pub async fn connect_sftp(
         Ok((
             ActiveConnection {
                 conn: Arc::new(Mutex::new(conn)),
-                transfers: TransferQueue::start(sink, params),
+                transfers: TransferQueue::start(sink, params.clone()),
+                params,
+                cancel_compare: Arc::default(),
             },
             initial_path,
         ))
@@ -394,7 +403,11 @@ pub fn enqueue_transfer(
     source: String,
     dest_dir: String,
     conflict: ConflictStrategy,
+    dest_name: Option<String>,
 ) -> Result<String, OmniError> {
+    if let Some(name) = &dest_name {
+        validate_file_name(name)?;
+    }
     let guard = lock(&state.0)?;
     let active = guard
         .as_ref()
@@ -406,6 +419,7 @@ pub fn enqueue_transfer(
         source,
         dest_dir,
         conflict,
+        dest_name,
     })?;
     Ok(id)
 }
@@ -416,6 +430,106 @@ pub fn cancel_transfer(state: tauri::State<'_, ConnectionState>, id: String) -> 
         active.transfers.cancel(&id);
     }
     Ok(())
+}
+
+/// Scans both sides on its own session, so browsing stays available meanwhile.
+#[tauri::command]
+pub async fn compare_sync(
+    state: tauri::State<'_, ConnectionState>,
+    local_root: String,
+    remote_root: String,
+    options: SyncOptions,
+) -> Result<SyncPlan, OmniError> {
+    let (params, cancel) = {
+        let guard = lock(&state.0)?;
+        let active = guard
+            .as_ref()
+            .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+        active.cancel_compare.store(false, Ordering::Relaxed);
+        (active.params.clone(), Arc::clone(&active.cancel_compare))
+    };
+    run_blocking(move || {
+        let local = sync::scan_local(Path::new(&local_root), &options.excludes, &cancel)?;
+        let mut conn = SftpConnection::new(&params);
+        conn.connect()?;
+        let remote = sync::scan_remote(&conn, &remote_root, &options.excludes, &cancel);
+        let _ = conn.disconnect();
+        Ok(sync::build_plan(local, remote?, &options))
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn cancel_sync_compare(state: tauri::State<'_, ConnectionState>) -> Result<(), OmniError> {
+    if let Some(active) = lock(&state.0)?.as_ref() {
+        active.cancel_compare.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn start_sync(
+    state: tauri::State<'_, ConnectionState>,
+    local_root: String,
+    remote_root: String,
+    actions: Vec<SyncAction>,
+) -> Result<String, OmniError> {
+    for action in &actions {
+        sync::validate_relative_path(&action.path)?;
+    }
+    let guard = lock(&state.0)?;
+    let active = guard
+        .as_ref()
+        .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+    let id = generate_id();
+    active.transfers.enqueue_sync(SyncRequest {
+        id: id.clone(),
+        local_root,
+        remote_root,
+        actions,
+    })?;
+    Ok(id)
+}
+
+fn log_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, OmniError> {
+    let dir = app_handle
+        .path()
+        .app_log_dir()
+        .map_err(|e| OmniError::Config(e.to_string()))?;
+    Ok(dir.join("omniscp.log"))
+}
+
+#[tauri::command]
+pub fn append_log(app_handle: tauri::AppHandle, entry: LogEntry) -> Result<(), OmniError> {
+    logging::append(&log_path(&app_handle)?, &entry)
+}
+
+#[tauri::command]
+pub async fn load_logs(app_handle: tauri::AppHandle, limit: usize) -> Result<Vec<LogEntry>, OmniError> {
+    let path = log_path(&app_handle)?;
+    run_blocking(move || logging::read_recent(&path, limit)).await
+}
+
+#[tauri::command]
+pub fn clear_logs(app_handle: tauri::AppHandle) -> Result<(), OmniError> {
+    logging::clear(&log_path(&app_handle)?)
+}
+
+/// Copies the journal to the Downloads folder and returns the new file's path.
+#[tauri::command]
+pub fn export_logs(app_handle: tauri::AppHandle) -> Result<String, OmniError> {
+    let source = log_path(&app_handle)?;
+    let dir = app_handle
+        .path()
+        .download_dir()
+        .map_err(|e| OmniError::Config(e.to_string()))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let target = dir.join(format!("omniscp-journal-{stamp}.jsonl"));
+    std::fs::copy(&source, &target).map_err(|e| OmniError::io_context(target.display(), e))?;
+    Ok(target.to_string_lossy().into_owned())
 }
 
 fn lock(
