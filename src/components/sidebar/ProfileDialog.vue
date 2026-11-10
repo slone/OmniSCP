@@ -34,7 +34,8 @@ const allAuthTypes: { value: AuthType; label: string }[] = [
   { value: 'Agent', label: 'Agent SSH' },
 ];
 
-const isEditing = computed(() => !!props.profile);
+// A duplicate arrives without an id: it is saved as a new profile.
+const isEditing = computed(() => !!props.profile?.id);
 
 const name = ref(props.profile?.name ?? '');
 const host = ref(props.profile?.host ?? '');
@@ -154,7 +155,9 @@ async function onSave() {
     save_password: storeSecret,
   };
 
-  const secretChange = !storeSecret ? null : secret.value ? secret.value : undefined;
+  // A new profile has nothing in the keychain to forget.
+  const forget = isEditing.value ? null : undefined;
+  const secretChange = !storeSecret ? forget : secret.value ? secret.value : undefined;
   emit('save', profile, secretChange);
 }
 
@@ -273,7 +276,7 @@ function onOverlayClick(e: MouseEvent) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--color-overlay);
 }
 
 .dialog-panel {
@@ -284,7 +287,7 @@ function onOverlayClick(e: MouseEvent) {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 32px var(--shadow-color);
 }
 
 .dialog-header {
@@ -370,7 +373,7 @@ function onOverlayClick(e: MouseEvent) {
 
 .form-error {
   font-size: 12px;
-  color: #f87171;
+  color: var(--color-danger);
   padding: 4px 0;
 }
 
@@ -404,10 +407,10 @@ function onOverlayClick(e: MouseEvent) {
 .btn-save {
   background: var(--color-accent);
   border-color: var(--color-accent);
-  color: #fff;
+  color: var(--color-on-accent);
 }
 
 .btn-save:hover {
-  background: #006cbd;
+  background: var(--color-accent-hover);
 }
 </style>

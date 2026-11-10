@@ -7,6 +7,7 @@ import { useLogStore } from '../stores/logs';
 import PasswordDialog from './PasswordDialog.vue';
 import HostKeyDialog from './HostKeyDialog.vue';
 import SyncDialog from './sync/SyncDialog.vue';
+import SettingsDialog from './SettingsDialog.vue';
 import { useLocalFilesStore } from '../stores/localFiles';
 import { isBackendError } from '../utils/errors';
 import { useFileActionsStore } from '../stores/fileActions';
@@ -19,6 +20,7 @@ const actions = useFileActionsStore();
 const localFiles = useLocalFilesStore();
 
 const showSync = ref(false);
+const showSettings = ref(false);
 
 const showPasswordDialog = ref(false);
 const passwordPromptLabel = ref('Mot de passe');
@@ -188,13 +190,14 @@ function onDisconnect() {
     <div class="toolbar-spacer" />
 
     <div class="toolbar-group">
-      <button class="toolbar-btn" title="Paramètres">
+      <button class="toolbar-btn" title="Paramètres" @click="showSettings = true">
         <span class="icon">&#9881;</span>
       </button>
     </div>
   </div>
 
   <SyncDialog v-if="showSync" @close="showSync = false" />
+  <SettingsDialog v-if="showSettings" @close="showSettings = false" />
 
   <PasswordDialog
     v-if="showPasswordDialog"

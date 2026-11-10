@@ -40,6 +40,8 @@ pub fn run() {
             commands::export_logs,
             commands::set_saved_password,
             commands::has_saved_password,
+            commands::load_settings,
+            commands::save_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

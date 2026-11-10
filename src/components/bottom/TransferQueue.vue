@@ -188,33 +188,33 @@ function canCancel(job: QueuedTransfer): boolean {
 }
 
 .status-completed {
-  background: #1a3a1a;
-  color: #4ade80;
+  background: var(--bg-success);
+  color: var(--color-success);
 }
 
 .status-completedwithwarnings {
-  background: #3a2f10;
-  color: #fbbf24;
+  background: var(--bg-warning);
+  color: var(--color-warning);
 }
 
 .status-inprogress {
-  background: #1a2a3a;
-  color: #60a5fa;
+  background: var(--bg-info);
+  color: var(--color-info);
 }
 
 .status-pending {
-  background: #2a2a1a;
-  color: #fbbf24;
+  background: var(--bg-warning);
+  color: var(--color-warning);
 }
 
 .status-failed {
-  background: #3a1a1a;
-  color: #f87171;
+  background: var(--bg-danger);
+  color: var(--color-danger);
 }
 
 .status-skipped {
-  background: #2a2a2a;
-  color: #d1d5db;
+  background: var(--bg-neutral);
+  color: var(--color-text);
 }
 
 .queue-spacer {
@@ -251,8 +251,8 @@ function canCancel(job: QueuedTransfer): boolean {
 }
 
 .status-cancelled {
-  background: #2a2a2a;
-  color: #9ca3af;
+  background: var(--bg-neutral);
+  color: var(--color-neutral);
 }
 
 .queue-empty {

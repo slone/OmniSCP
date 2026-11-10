@@ -36,15 +36,36 @@ import FileActionDialogs from './components/dialogs/FileActionDialogs.vue';
 
 <style>
 :root {
-  /* Colors — dark theme */
+  /* Colors — dark theme (the default); light overrides below */
+  color-scheme: dark;
   --color-bg: #1e1e1e;
   --color-surface: #252526;
   --color-border: #3c3c3c;
   --color-hover: #2a2d2e;
   --color-active: #37373d;
+  --color-selected: #094771;
   --color-accent: #0078d4;
+  --color-accent-hover: #006cbd;
+  --color-on-accent: #fff;
   --color-text: #cccccc;
   --color-text-muted: #808080;
+  --color-overlay: rgba(0, 0, 0, 0.5);
+  --shadow-color: rgba(0, 0, 0, 0.4);
+
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-danger: #f87171;
+  --color-info: #60a5fa;
+  --color-neutral: #9ca3af;
+  --color-danger-solid: #b42318;
+  --color-danger-solid-hover: #912018;
+  --color-danger-border: #7f1d1d;
+  --color-danger-text: #fca5a5;
+  --bg-success: #1a3a1a;
+  --bg-warning: #3a2f10;
+  --bg-info: #1a2a3a;
+  --bg-danger: #3a1a1a;
+  --bg-neutral: #2a2a2a;
 
   /* Typography */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -64,6 +85,35 @@ import FileActionDialogs from './components/dialogs/FileActionDialogs.vue';
 
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #ffffff;
+  --color-surface: #f3f3f3;
+  --color-border: #d4d4d4;
+  --color-hover: #e8e8e8;
+  --color-active: #dcdcdc;
+  --color-selected: #cce4f7;
+  --color-accent: #0067c0;
+  --color-accent-hover: #005ba8;
+  --color-text: #1f1f1f;
+  --color-text-muted: #6b6b6b;
+  --color-overlay: rgba(0, 0, 0, 0.3);
+  --shadow-color: rgba(0, 0, 0, 0.2);
+
+  --color-success: #15803d;
+  --color-warning: #b45309;
+  --color-danger: #b91c1c;
+  --color-info: #1d4ed8;
+  --color-neutral: #6b7280;
+  --color-danger-border: #fca5a5;
+  --color-danger-text: #991b1b;
+  --bg-success: #dcfce7;
+  --bg-warning: #fef3c7;
+  --bg-info: #dbeafe;
+  --bg-danger: #fee2e2;
+  --bg-neutral: #f3f4f6;
 }
 
 *,

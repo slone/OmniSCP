@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use tauri::{Emitter, Manager};
 
-use crate::config::{AuthMethod, Profile, credentials};
+use crate::config::{AppConfig, AuthMethod, Profile, credentials};
 use crate::error::OmniError;
 use crate::logging::{self, LogEntry};
 use crate::protocols::{
@@ -211,11 +211,15 @@ pub async fn connect(
         None => None,
     };
 
-    let known_hosts_path = app_handle
+    let config_dir = app_handle
         .path()
         .app_config_dir()
-        .map_err(|e| OmniError::Config(e.to_string()))?
-        .join("known_hosts");
+        .map_err(|e| OmniError::Config(e.to_string()))?;
+    let known_hosts_path = config_dir.join("known_hosts");
+    // Unreadable settings must not prevent connecting.
+    let workers = AppConfig::load(&config_dir.join(SETTINGS_FILE))
+        .unwrap_or_default()
+        .concurrent_transfers;
 
     let params = ConnectParams {
         profile,
@@ -239,7 +243,7 @@ pub async fn connect(
         Ok((
             ActiveConnection {
                 conn: Arc::new(Mutex::new(conn)),
-                transfers: TransferQueue::start(sink, params.clone()),
+                transfers: TransferQueue::start(sink, params.clone(), workers),
                 params,
                 cancel_compare: Arc::default(),
             },
@@ -254,6 +258,29 @@ pub async fn connect(
     }
 
     Ok(initial_path)
+}
+
+const SETTINGS_FILE: &str = "settings.json";
+
+fn settings_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, OmniError> {
+    let dir = app_handle
+        .path()
+        .app_config_dir()
+        .map_err(|e| OmniError::Config(e.to_string()))?;
+    Ok(dir.join(SETTINGS_FILE))
+}
+
+#[tauri::command]
+pub fn load_settings(app_handle: tauri::AppHandle) -> Result<AppConfig, OmniError> {
+    AppConfig::load(&settings_path(&app_handle)?)
+}
+
+/// Returns what was saved, after bringing values within range.
+#[tauri::command]
+pub fn save_settings(app_handle: tauri::AppHandle, settings: AppConfig) -> Result<AppConfig, OmniError> {
+    let settings = settings.sanitized();
+    settings.save(&settings_path(&app_handle)?)?;
+    Ok(settings)
 }
 
 #[tauri::command]
