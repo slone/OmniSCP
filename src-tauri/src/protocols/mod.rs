@@ -1,10 +1,33 @@
+pub mod scp;
 pub mod sftp;
+pub mod ssh;
 
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::config::Profile;
 use crate::error::{OmniError, Result};
+
+/// Everything needed to open a connection; cloned to open extra sessions (transfers).
+#[derive(Clone)]
+pub struct ConnectParams {
+    pub profile: Profile,
+    pub password: Option<String>,
+    /// App-managed known_hosts file, where host keys accepted by the user are recorded.
+    pub known_hosts_path: PathBuf,
+    /// Fingerprint the user explicitly accepted for an unknown host.
+    pub trusted_fingerprint: Option<String>,
+}
+
+/// The implementation for a profile's protocol, not connected yet.
+pub fn for_profile(params: &ConnectParams) -> Result<Box<dyn Protocol>> {
+    match params.profile.protocol {
+        ProtocolType::Sftp => Ok(Box::new(sftp::SftpConnection::new(params))),
+        ProtocolType::Scp => Ok(Box::new(scp::ScpConnection::new(params))),
+        other => Err(OmniError::Protocol(format!("Protocol {other:?} is not supported yet"))),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProtocolType {
@@ -159,6 +182,49 @@ pub fn temp_file_name() -> String {
     format!(".omniscp-{millis:x}-{count:x}.part")
 }
 
+/// Where to write data destined for `remote`, in the same folder so it can be renamed over it.
+pub fn temp_path_beside(remote: &str) -> String {
+    match remote_parent(remote) {
+        Some(parent) => remote_join(&parent, &temp_file_name()),
+        None => temp_file_name(),
+    }
+}
+
+/// Writes through a temporary file and only then replaces `local`, keeping the
+/// permissions of the file it replaces. `mtime` is the source's date, which sync compares.
+pub fn write_local_atomically(
+    local: &Path,
+    mtime: Option<u64>,
+    copy: impl FnOnce(&mut std::fs::File) -> Result<()>,
+) -> Result<()> {
+    let temp = local.with_file_name(temp_file_name());
+    let mut file = std::fs::File::create(&temp)
+        .map_err(|e| OmniError::io_context(format!("Failed to create {}", temp.display()), e))?;
+    let write_err = |e| OmniError::io_context(format!("Failed to write {}", local.display()), e);
+
+    let result = copy(&mut file).and_then(|()| {
+        // Not worth losing the download over.
+        if let Some(mtime) = mtime {
+            let _ = file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime));
+        }
+        file.sync_all().map_err(write_err)
+    });
+    // Windows cannot rename or remove a file that is still open.
+    drop(file);
+
+    let result = result.and_then(|()| {
+        if let Ok(meta) = std::fs::metadata(local) {
+            let _ = std::fs::set_permissions(&temp, meta.permissions());
+        }
+        std::fs::rename(&temp, local).map_err(write_err)
+    });
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
 /// Rejects names that would escape the target directory or are not valid file names.
 pub fn validate_file_name(name: &str) -> Result<()> {
     let name = name.trim();
@@ -185,6 +251,8 @@ pub trait Protocol: Send + Sync {
     fn disconnect(&mut self) -> Result<()>;
     /// Asks the server, so this can block; a session can die without any local sign.
     fn is_alive(&self) -> bool;
+    /// The absolute form of a folder's path; `.` gives the initial folder.
+    fn realpath(&self, path: &str) -> Result<String>;
     fn list_dir(&self, path: &str) -> Result<Vec<FileEntry>>;
     /// The destination only changes once the data is complete: a failed or
     /// cancelled copy leaves any existing file untouched.

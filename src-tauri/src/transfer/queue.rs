@@ -11,8 +11,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::error::{OmniError, Result};
-use crate::protocols::sftp::{ConnectParams, SftpConnection};
-use crate::protocols::{Protocol, remote_file_name, remote_join, remote_parent, unique_name};
+use crate::protocols::{ConnectParams, Protocol, for_profile, remote_file_name, remote_join, remote_parent, unique_name};
 use crate::sync::{self, SyncAction, SyncActionKind};
 use crate::transfer::{ConflictStrategy, TransferDirection, TransferStatus};
 
@@ -127,7 +126,7 @@ fn run_worker(
     receiver: Receiver<Request>,
     cancels: CancelFlags,
 ) {
-    let mut conn: Option<SftpConnection> = None;
+    let mut conn: Option<Box<dyn Protocol>> = None;
 
     // Ends once the queue is dropped and every buffered request was handled.
     for request in receiver {
@@ -178,19 +177,19 @@ fn run_worker(
 }
 
 fn ensure_connected<'a>(
-    conn: &'a mut Option<SftpConnection>,
+    conn: &'a mut Option<Box<dyn Protocol>>,
     params: &ConnectParams,
-) -> Result<&'a SftpConnection> {
+) -> Result<&'a dyn Protocol> {
     // The session may have died since the previous job.
     if conn.as_ref().is_some_and(|c| !c.is_alive()) {
         *conn = None;
     }
     if conn.is_none() {
-        let mut c = SftpConnection::new(params);
+        let mut c = for_profile(params)?;
         c.connect()?;
         *conn = Some(c);
     }
-    Ok(conn.as_ref().expect("connection set above"))
+    Ok(conn.as_deref().expect("connection set above"))
 }
 
 struct Job<'a> {
@@ -240,7 +239,7 @@ impl Job<'_> {
     }
 
     /// Keeps going after a failed item, unless nothing further can succeed.
-    fn record_failure(&mut self, conn: &SftpConnection, err: OmniError) -> Result<()> {
+    fn record_failure(&mut self, conn: &dyn Protocol, err: OmniError) -> Result<()> {
         if matches!(err, OmniError::Cancelled) || !conn.is_alive() {
             return Err(err);
         }
@@ -278,7 +277,7 @@ impl Job<'_> {
         Some(summary)
     }
 
-    fn run(&mut self, conn: &SftpConnection, request: &Request) -> Result<TransferStatus> {
+    fn run(&mut self, conn: &dyn Protocol, request: &Request) -> Result<TransferStatus> {
         match request {
             Request::Sync(request) => self.sync(conn, request),
             Request::Transfer(request) => {
@@ -291,7 +290,7 @@ impl Job<'_> {
         }
     }
 
-    fn sync(&mut self, conn: &SftpConnection, request: &SyncRequest) -> Result<TransferStatus> {
+    fn sync(&mut self, conn: &dyn Protocol, request: &SyncRequest) -> Result<TransferStatus> {
         self.destination = Some(request.remote_root.clone());
         self.total = request
             .actions
@@ -321,7 +320,7 @@ impl Job<'_> {
         Ok(self.final_status())
     }
 
-    fn sync_action(&mut self, conn: &SftpConnection, request: &SyncRequest, action: &SyncAction) -> Result<()> {
+    fn sync_action(&mut self, conn: &dyn Protocol, request: &SyncRequest, action: &SyncAction) -> Result<()> {
         let local = Path::new(&request.local_root).join(&action.path);
         let remote = remote_join(&request.remote_root, &action.path);
         let changed = || OmniError::Transfer(format!("{}: changed since the preview, left untouched", action.path));
@@ -380,7 +379,7 @@ impl Job<'_> {
         Ok(())
     }
 
-    fn upload(&mut self, conn: &SftpConnection, request: &TransferRequest) -> Result<TransferStatus> {
+    fn upload(&mut self, conn: &dyn Protocol, request: &TransferRequest) -> Result<TransferStatus> {
         let source = PathBuf::from(&request.source);
         let name = source
             .file_name()
@@ -405,7 +404,7 @@ impl Job<'_> {
         Ok(self.final_status())
     }
 
-    fn upload_tree(&mut self, conn: &SftpConnection, local: &Path, remote: &str) -> Result<()> {
+    fn upload_tree(&mut self, conn: &dyn Protocol, local: &Path, remote: &str) -> Result<()> {
         self.check_cancel()?;
         let meta = std::fs::symlink_metadata(local)
             .map_err(|e| OmniError::io_context(local.display(), e))?;
@@ -439,7 +438,7 @@ impl Job<'_> {
         }
     }
 
-    fn download(&mut self, conn: &SftpConnection, request: &TransferRequest) -> Result<TransferStatus> {
+    fn download(&mut self, conn: &dyn Protocol, request: &TransferRequest) -> Result<TransferStatus> {
         let name = request
             .dest_name
             .clone()
@@ -464,7 +463,7 @@ impl Job<'_> {
         Ok(self.final_status())
     }
 
-    fn download_tree(&mut self, conn: &SftpConnection, remote: &str, is_dir: bool, local: &Path) -> Result<()> {
+    fn download_tree(&mut self, conn: &dyn Protocol, remote: &str, is_dir: bool, local: &Path) -> Result<()> {
         self.check_cancel()?;
         if is_dir {
             std::fs::create_dir_all(local).map_err(|e| OmniError::io_context(local.display(), e))?;
@@ -506,7 +505,7 @@ fn resolve_conflict(name: &str, strategy: ConflictStrategy, exists: impl Fn(&str
 }
 
 /// Creates the folders missing between the sync root and `remote`.
-fn ensure_remote_parents(conn: &SftpConnection, root: &str, remote: &str) -> Result<()> {
+fn ensure_remote_parents(conn: &dyn Protocol, root: &str, remote: &str) -> Result<()> {
     let Some(parent) = remote_parent(remote) else { return Ok(()) };
     if parent.len() <= root.len() || conn.exists(&parent) {
         return Ok(());
@@ -543,7 +542,7 @@ fn local_tree_size(path: &Path) -> Result<u64> {
 }
 
 /// Same as `local_tree_size`, unless the session died.
-fn remote_tree_size(conn: &SftpConnection, path: &str, is_dir: bool, size: u64) -> Result<u64> {
+fn remote_tree_size(conn: &dyn Protocol, path: &str, is_dir: bool, size: u64) -> Result<u64> {
     if !is_dir {
         return Ok(size);
     }

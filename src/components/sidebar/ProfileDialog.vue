@@ -15,6 +15,8 @@ const emit = defineEmits<{
 
 const allProtocols: ProtocolType[] = ['Sftp', 'Scp', 'Ftp', 'Ftps', 'WebDav', 'WebDavs'];
 
+const availableProtocols: ProtocolType[] = ['Sftp', 'Scp'];
+
 const defaultPorts: Record<ProtocolType, number> = {
   Sftp: 22,
   Scp: 22,
@@ -192,10 +194,13 @@ function onOverlayClick(e: MouseEvent) {
         <div class="form-group">
           <label class="form-label">Protocole</label>
           <select v-model="protocol" class="form-input">
-            <option v-for="p in allProtocols" :key="p" :value="p">
-              {{ p }}{{ p === 'Sftp' ? '' : ' (bientôt)' }}
+            <option v-for="p in allProtocols" :key="p" :value="p" :disabled="!availableProtocols.includes(p)">
+              {{ p }}{{ availableProtocols.includes(p) ? '' : ' (bientôt)' }}
             </option>
           </select>
+          <span v-if="protocol === 'Scp'" class="form-hint">
+            SCP utilise des commandes shell sur le serveur pour lister, renommer et supprimer. Préférez SFTP s'il est disponible.
+          </span>
         </div>
 
         <div class="form-group">

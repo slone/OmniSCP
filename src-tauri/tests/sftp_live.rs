@@ -7,8 +7,8 @@
 
 use omniscp_lib::config::{AuthMethod, Profile};
 use omniscp_lib::error::OmniError;
-use omniscp_lib::protocols::sftp::{ConnectParams, SftpConnection};
-use omniscp_lib::protocols::{Protocol, ProtocolType};
+use omniscp_lib::protocols::sftp::SftpConnection;
+use omniscp_lib::protocols::{ConnectParams, Protocol, ProtocolType};
 
 fn params(fingerprint: Option<String>, known_hosts: std::path::PathBuf) -> ConnectParams {
     ConnectParams {

@@ -1,7 +1,15 @@
-//! Live tests of the transfer queue against a real SFTP server; ignored by default.
-//! Same server as sftp_live.rs. Run them one at a time: one test restarts the container.
+//! Live tests of the transfer queue and sync against a real server; ignored by default.
+//! Run them one at a time: one test restarts the container.
+//!
+//! Over SFTP, on the server of sftp_live.rs:
 //!
 //!   OMNISCP_TEST_FINGERPRINT=SHA256:... cargo test --test transfer_live -- --ignored --test-threads=1
+//!
+//! Over SCP, on a server of scp_live.rs, with its variables as well:
+//!
+//!   OMNISCP_TEST_PROTOCOL=scp OMNISCP_TEST_PORT=2223 OMNISCP_TEST_BASE=/home/test \\
+//!   OMNISCP_TEST_CONTAINER=omniscp-scp-debian OMNISCP_TEST_FINGERPRINT=SHA256:... \\
+//!   cargo test --test transfer_live -- --ignored --test-threads=1
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,16 +19,19 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use omniscp_lib::config::{AuthMethod, Profile};
-use omniscp_lib::protocols::sftp::{ConnectParams, SftpConnection};
-use omniscp_lib::protocols::{Protocol, ProtocolType};
+use omniscp_lib::protocols::{ConnectParams, Protocol, ProtocolType, for_profile};
 use omniscp_lib::sync::{self, SyncAction, SyncActionKind, SyncMode, SyncOptions, SyncPlan};
 use omniscp_lib::transfer::queue::{SyncRequest, TransferEvent, TransferQueue, TransferRequest};
 use omniscp_lib::transfer::{ConflictStrategy, TransferDirection, TransferStatus};
 
+fn env_or(name: &str, default: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
 struct Harness {
     tmp: PathBuf,
     base: String,
-    conn: SftpConnection,
+    conn: Box<dyn Protocol>,
     params: ConnectParams,
     queue: TransferQueue,
     events: Receiver<TransferEvent>,
@@ -38,8 +49,12 @@ impl Harness {
                 id: "test".into(),
                 name: "test".into(),
                 host: "localhost".into(),
-                port: 2222,
-                protocol: ProtocolType::Sftp,
+                port: env_or("OMNISCP_TEST_PORT", "2222").parse().unwrap(),
+                protocol: if env_or("OMNISCP_TEST_PROTOCOL", "sftp") == "scp" {
+                    ProtocolType::Scp
+                } else {
+                    ProtocolType::Sftp
+                },
                 username: "test".into(),
                 auth_method: AuthMethod::Password,
                 remote_directory: None,
@@ -51,9 +66,9 @@ impl Harness {
             known_hosts_path: tmp.join("known_hosts"),
             trusted_fingerprint: Some(fingerprint),
         };
-        let mut conn = SftpConnection::new(&params);
+        let mut conn = for_profile(&params).unwrap();
         conn.connect().unwrap();
-        let base = format!("/upload/omniscp-queue-{label}");
+        let base = format!("{}/omniscp-queue-{label}", env_or("OMNISCP_TEST_BASE", "/upload"));
         let _ = conn.delete(&base);
         conn.mkdir(&base).unwrap();
 
@@ -87,7 +102,7 @@ impl Harness {
     fn plan(&self, local_root: &Path, remote_root: &str, options: &SyncOptions) -> SyncPlan {
         let cancel = AtomicBool::new(false);
         let local = sync::scan_local(local_root, &options.excludes, &cancel).unwrap();
-        let remote = sync::scan_remote(&self.conn, remote_root, &options.excludes, &cancel).unwrap();
+        let remote = sync::scan_remote(self.conn.as_ref(), remote_root, &options.excludes, &cancel).unwrap();
         sync::build_plan(local, remote, options)
     }
 
@@ -283,11 +298,14 @@ fn survives_a_dropped_connection() {
     assert_eq!(h.upload(&file, &base, ConflictStrategy::Skip).status, TransferStatus::Completed);
     assert!(h.conn.is_alive());
 
-    let restarted = Command::new("docker").args(["restart", "omniscp-sftp-test"]).status().unwrap();
+    let restarted = Command::new("docker")
+        .args(["restart", &env_or("OMNISCP_TEST_CONTAINER", "omniscp-sftp-test")])
+        .status()
+        .unwrap();
     assert!(restarted.success());
     let mut ready = false;
     for _ in 0..30 {
-        let mut probe = SftpConnection::new(&h.params);
+        let mut probe = for_profile(&h.params).unwrap();
         if probe.connect().is_ok() {
             ready = true;
             break;

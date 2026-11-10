@@ -174,7 +174,7 @@ pub fn local_meta(path: &Path) -> Option<EntryMeta> {
     })
 }
 
-pub fn remote_meta(conn: &impl Protocol, path: &str) -> Option<EntryMeta> {
+pub fn remote_meta(conn: &dyn Protocol, path: &str) -> Option<EntryMeta> {
     let entry = conn.stat(path).ok()?;
     Some(EntryMeta {
         is_dir: entry.is_dir,
@@ -245,7 +245,7 @@ fn scan_local_entries(
     Ok(())
 }
 
-pub fn scan_remote(conn: &impl Protocol, root: &str, excludes: &[String], cancel: &AtomicBool) -> Result<Scan> {
+pub fn scan_remote(conn: &dyn Protocol, root: &str, excludes: &[String], cancel: &AtomicBool) -> Result<Scan> {
     let mut scan = Scan::default();
     let top = conn.list_dir(root)?;
     scan_remote_entries(conn, root, top, "", excludes, cancel, &mut scan)?;
@@ -253,7 +253,7 @@ pub fn scan_remote(conn: &impl Protocol, root: &str, excludes: &[String], cancel
 }
 
 fn scan_remote_entries(
-    conn: &impl Protocol,
+    conn: &dyn Protocol,
     root: &str,
     entries: Vec<crate::protocols::FileEntry>,
     rel: &str,

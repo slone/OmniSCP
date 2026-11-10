@@ -23,7 +23,7 @@ export const useConnectionStore = defineStore('connection', () => {
     error.value = null;
 
     try {
-      const initialPath = await invoke<string>('connect_sftp', {
+      const initialPath = await invoke<string>('connect', {
         profile,
         password,
         trustedFingerprint,
@@ -54,7 +54,7 @@ export const useConnectionStore = defineStore('connection', () => {
   async function disconnect() {
     const logStore = useLogStore();
     try {
-      await invoke('disconnect_sftp');
+      await invoke('disconnect');
       logStore.addLog('Info', 'Déconnexion', 'OK', `Déconnecté de ${profileName.value}`);
     } catch (err) {
       const message = errorMessage(err);

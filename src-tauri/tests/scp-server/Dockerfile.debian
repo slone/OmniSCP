@@ -1,0 +1,6 @@
+# GNU coreutils `ls`. See tests/scp_live.rs.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server openssh-client \
+    && mkdir -p /run/sshd && useradd -m -s /bin/sh test && echo 'test:test' | chpasswd
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]
