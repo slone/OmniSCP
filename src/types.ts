@@ -122,8 +122,16 @@ export interface LogEntry {
   detail?: string;
 }
 
+export type Theme = 'system' | 'dark' | 'light';
+
+export type DefaultConflict = 'Ask' | 'Overwrite' | 'Skip' | 'Rename';
+
+/// Mirrors `AppConfig` in src-tauri/src/config/mod.rs.
 export interface AppConfig {
   language: string;
-  theme: string;
+  theme: Theme;
+  /// Applies from the next connection.
   concurrent_transfers: number;
+  show_hidden_files: boolean;
+  default_conflict: DefaultConflict;
 }

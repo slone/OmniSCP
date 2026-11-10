@@ -65,7 +65,7 @@ function onOverlayClick(e: MouseEvent) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--color-overlay);
 }
 
 .dialog-panel {
@@ -75,7 +75,7 @@ function onOverlayClick(e: MouseEvent) {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 32px var(--shadow-color);
 }
 
 .dialog-header {
@@ -171,10 +171,10 @@ function onOverlayClick(e: MouseEvent) {
 .btn-save {
   background: var(--color-accent);
   border-color: var(--color-accent);
-  color: #fff;
+  color: var(--color-on-accent);
 }
 
 .btn-save:hover {
-  background: #006cbd;
+  background: var(--color-accent-hover);
 }
 </style>

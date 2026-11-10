@@ -54,6 +54,6 @@ onMounted(() => {
 }
 
 .warning {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 </style>

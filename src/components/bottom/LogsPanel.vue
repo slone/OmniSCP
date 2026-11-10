@@ -128,8 +128,8 @@ async function onClear() {
 }
 
 .logs-btn-danger {
-  border-color: #b42318;
-  color: #f87171;
+  border-color: var(--color-danger-solid);
+  color: var(--color-danger);
 }
 
 .log-entries {
@@ -162,10 +162,10 @@ async function onClear() {
   font-size: 10px;
 }
 
-.level-debug { color: #9ca3af; }
-.level-info { color: #60a5fa; }
-.level-warning { color: #fbbf24; }
-.level-error { color: #f87171; }
+.level-debug { color: var(--color-neutral); }
+.level-info { color: var(--color-info); }
+.level-warning { color: var(--color-warning); }
+.level-error { color: var(--color-danger); }
 
 .log-action {
   color: var(--color-text);

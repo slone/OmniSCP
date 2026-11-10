@@ -1,4 +1,4 @@
-// Background transfer queue: one worker thread with its own SSH session, so
+// Background transfer queue: worker threads, each with its own session, so
 // browsing on the main connection stays responsive while files are copied.
 
 use std::collections::HashMap;
@@ -76,11 +76,16 @@ pub struct TransferQueue {
 }
 
 impl TransferQueue {
-    pub fn start(sink: EventSink, params: ConnectParams) -> Self {
+    /// Runs up to `workers` jobs at once. A worker opens its session on its first job.
+    pub fn start(sink: EventSink, params: ConnectParams, workers: u32) -> Self {
         let (sender, receiver) = mpsc::channel();
+        let receiver = Arc::new(Mutex::new(receiver));
         let cancels: CancelFlags = Arc::default();
-        let worker_cancels = Arc::clone(&cancels);
-        std::thread::spawn(move || run_worker(sink, params, receiver, worker_cancels));
+        for _ in 0..workers.max(1) {
+            let (sink, params, receiver, cancels) =
+                (Arc::clone(&sink), params.clone(), Arc::clone(&receiver), Arc::clone(&cancels));
+            std::thread::spawn(move || run_worker(sink, params, receiver, cancels));
+        }
         Self { sender, cancels }
     }
 
@@ -123,13 +128,16 @@ impl Drop for TransferQueue {
 fn run_worker(
     sink: EventSink,
     params: ConnectParams,
-    receiver: Receiver<Request>,
+    receiver: Arc<Mutex<Receiver<Request>>>,
     cancels: CancelFlags,
 ) {
     let mut conn: Option<Box<dyn Protocol>> = None;
 
     // Ends once the queue is dropped and every buffered request was handled.
-    for request in receiver {
+    // The lock is released as soon as a request is taken, so other workers pick the next one.
+    loop {
+        let next = receiver.lock().unwrap_or_else(|e| e.into_inner()).recv();
+        let Ok(request) = next else { break };
         let cancel = cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())

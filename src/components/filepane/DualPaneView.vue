@@ -118,10 +118,10 @@ onMounted(() => {
   gap: 6px;
   max-width: 80%;
   padding: 12px 16px;
-  border: 1px solid #7f1d1d;
+  border: 1px solid var(--color-danger-border);
   border-radius: 4px;
-  background: #3a1a1a;
-  color: #fca5a5;
+  background: var(--bg-danger);
+  color: var(--color-danger-text);
   font-size: 12px;
   word-break: break-word;
 }

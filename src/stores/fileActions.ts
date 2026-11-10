@@ -6,6 +6,7 @@ import { useLogStore } from './logs';
 import { useLocalFilesStore } from './localFiles';
 import { useConnectionStore } from './connection';
 import { useTransfersStore } from './transfers';
+import { useSettingsStore } from './settings';
 import { errorMessage } from '../utils/errors';
 
 export type FileDialog =
@@ -133,7 +134,8 @@ export const useFileActionsStore = defineStore('fileActions', () => {
     const direction = from === 'local' ? 'Upload' : 'Download';
     const transfers = useTransfersStore();
 
-    let remembered: ConflictStrategy | null = null;
+    const preset = useSettingsStore().settings.default_conflict;
+    let remembered: ConflictStrategy | null = preset === 'Ask' ? null : preset;
     const conflicts = entries.filter((e) => existing.has(e.name)).length;
     let seen = 0;
 

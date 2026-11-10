@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import type { Profile } from '../../types';
 import { useProfilesStore } from '../../stores/profiles';
 import ProfileDialog from './ProfileDialog.vue';
@@ -8,6 +8,18 @@ const profileStore = useProfilesStore();
 
 const showDialog = ref(false);
 const editingProfile = ref<Profile | undefined>(undefined);
+const search = ref('');
+
+const visibleProfiles = computed(() => {
+  const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return profileStore.profiles;
+  return profileStore.profiles.filter((p) => {
+    const text = [p.name, p.host, p.username, p.protocol, p.description ?? '', ...p.tags]
+      .join(' ')
+      .toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
+});
 
 onMounted(() => {
   profileStore.loadProfiles();
@@ -20,6 +32,18 @@ function openCreateDialog() {
 
 function openEditDialog(profile: Profile) {
   editingProfile.value = { ...profile };
+  showDialog.value = true;
+}
+
+/// Opens the editor on a copy; the password is not copied, it stays with the original.
+function openDuplicateDialog(profile: Profile) {
+  editingProfile.value = {
+    ...profile,
+    tags: [...profile.tags],
+    id: '',
+    name: `${profile.name} (copie)`,
+    save_password: false,
+  };
   showDialog.value = true;
 }
 
@@ -47,15 +71,28 @@ function onSelectProfile(id: string) {
   <aside class="sidebar">
     <div class="sidebar-header">
       <span class="sidebar-title">Profils</span>
+      <input
+        v-if="profileStore.profiles.length > 0"
+        v-model="search"
+        type="search"
+        class="search-input"
+        placeholder="Rechercher (nom, hôte, tag…)"
+        aria-label="Rechercher un profil"
+        spellcheck="false"
+        @keydown.esc="search = ''"
+      />
     </div>
 
     <div class="sidebar-content">
       <div v-if="profileStore.profiles.length === 0" class="empty-state">
         (aucun profil)
       </div>
+      <div v-else-if="visibleProfiles.length === 0" class="empty-state">
+        Aucun profil ne correspond
+      </div>
       <ul v-else class="profile-list">
         <li
-          v-for="profile in profileStore.profiles"
+          v-for="profile in visibleProfiles"
           :key="profile.id"
           class="profile-item"
           :class="{ active: profileStore.selectedId === profile.id }"
@@ -66,6 +103,9 @@ function onSelectProfile(id: string) {
             <div class="profile-detail">
               {{ profile.protocol }} · {{ profile.host }}
             </div>
+            <div v-if="profile.tags.length > 0" class="profile-tags">
+              <span v-for="tag in profile.tags" :key="tag" class="tag">{{ tag }}</span>
+            </div>
           </div>
           <div class="profile-actions">
             <button
@@ -73,6 +113,11 @@ function onSelectProfile(id: string) {
               title="Modifier"
               @click.stop="openEditDialog(profile)"
             >&#9998;</button>
+            <button
+              class="btn-icon"
+              title="Dupliquer"
+              @click.stop="openDuplicateDialog(profile)"
+            >&#10697;</button>
             <button
               class="btn-icon btn-icon-danger"
               title="Supprimer"
@@ -108,8 +153,36 @@ function onSelectProfile(id: string) {
 }
 
 .sidebar-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border);
+}
+
+.search-input {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.profile-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 3px;
+}
+
+.tag {
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--color-active);
+  color: var(--color-text-muted);
+  font-size: 10px;
 }
 
 .sidebar-title {
@@ -209,7 +282,7 @@ function onSelectProfile(id: string) {
 }
 
 .btn-icon-danger:hover {
-  color: #f87171;
+  color: var(--color-danger);
 }
 
 .sidebar-footer {

@@ -287,7 +287,7 @@ async function run() {
 }
 
 .warning {
-  color: #fbbf24;
+  color: var(--color-warning);
 }
 
 .warning ul {
@@ -298,7 +298,7 @@ async function run() {
 }
 
 .error {
-  color: #f87171;
+  color: var(--color-danger);
 }
 
 .plan {
@@ -351,7 +351,7 @@ async function run() {
 }
 
 .dangerous .action {
-  color: #f87171;
+  color: var(--color-danger);
 }
 
 .choice {

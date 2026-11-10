@@ -40,6 +40,10 @@ struct Harness {
 
 impl Harness {
     fn new(label: &str) -> Self {
+        Self::with_workers(label, 1)
+    }
+
+    fn with_workers(label: &str, workers: u32) -> Self {
         let fingerprint = std::env::var("OMNISCP_TEST_FINGERPRINT").expect("OMNISCP_TEST_FINGERPRINT");
         let tmp = std::env::temp_dir().join(format!("omniscp-queue-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -79,6 +83,7 @@ impl Harness {
                 let _ = sender.lock().unwrap().send(event);
             }),
             params.clone(),
+            workers,
         );
         Self { tmp, base, conn, params, queue, events, next_id: 0 }
     }
@@ -230,6 +235,46 @@ fn cancelling_keeps_the_destination_and_the_queue_running() {
     let other = h.tmp.join("other.txt");
     write(&other, b"x");
     assert_eq!(h.upload(&other, &base, ConflictStrategy::Skip).status, TransferStatus::Completed);
+    h.cleanup();
+}
+
+#[test]
+#[ignore]
+fn jobs_run_in_parallel_on_separate_sessions() {
+    let mut h = Harness::with_workers("parallel", 3);
+    let base = h.base.clone();
+    let files: Vec<PathBuf> = (0..3u8)
+        .map(|i| {
+            let file = h.tmp.join(format!("f{i}.bin"));
+            write(&file, &vec![i; 16 * 1024 * 1024]);
+            file
+        })
+        .collect();
+    let ids: Vec<String> = files
+        .iter()
+        .map(|f| h.enqueue(TransferDirection::Upload, f.to_str().unwrap(), &base, ConflictStrategy::Skip))
+        .collect();
+
+    let mut running = std::collections::HashSet::new();
+    let mut most_at_once = 0;
+    let mut finished = std::collections::HashMap::new();
+    while finished.len() < ids.len() {
+        let event = h.events.recv_timeout(Duration::from_secs(60)).expect("jobs never finished");
+        if event.status == TransferStatus::InProgress {
+            running.insert(event.id.clone());
+        } else if event.status != TransferStatus::Pending {
+            running.remove(&event.id);
+            finished.insert(event.id.clone(), event.status);
+        }
+        most_at_once = most_at_once.max(running.len());
+    }
+    assert!(most_at_once >= 2, "jobs ran one after the other");
+    assert!(ids.iter().all(|id| finished[id] == TransferStatus::Completed), "{finished:?}");
+    for (i, file) in files.iter().enumerate() {
+        let back = h.tmp.join("back.bin");
+        h.conn.download(&format!("{base}/f{i}.bin"), &back, &mut |_| true).unwrap();
+        assert!(std::fs::read(&back).unwrap() == std::fs::read(file).unwrap(), "f{i}.bin differs");
+    }
     h.cleanup();
 }
 
