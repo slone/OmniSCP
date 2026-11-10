@@ -10,9 +10,8 @@ use tauri::{Emitter, Manager};
 use crate::config::{AuthMethod, Profile, credentials};
 use crate::error::OmniError;
 use crate::logging::{self, LogEntry};
-use crate::protocols::sftp::{ConnectParams, SftpConnection};
 use crate::protocols::{
-    FileEntry, Protocol, ProtocolType, remote_join, remote_parent, sort_entries, validate_file_name,
+    ConnectParams, FileEntry, Protocol, for_profile, remote_join, remote_parent, sort_entries, validate_file_name,
 };
 use crate::sync::{self, SyncAction, SyncOptions, SyncPlan};
 use crate::transfer::queue::{EventSink, PROGRESS_EVENT, SyncRequest, TransferQueue, TransferRequest};
@@ -20,7 +19,7 @@ use crate::transfer::{ConflictStrategy, TransferDirection};
 
 pub struct ActiveConnection {
     /// Locked for the duration of network calls, which can be long (recursive delete).
-    conn: Arc<Mutex<SftpConnection>>,
+    conn: Arc<Mutex<Box<dyn Protocol>>>,
     transfers: TransferQueue,
     /// For sessions opened on the side, such as long sync scans.
     params: ConnectParams,
@@ -35,7 +34,7 @@ impl ActiveConnection {
     }
 }
 
-fn lock_conn(conn: &Mutex<SftpConnection>) -> MutexGuard<'_, SftpConnection> {
+fn lock_conn(conn: &Mutex<Box<dyn Protocol>>) -> MutexGuard<'_, Box<dyn Protocol>> {
     conn.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -196,20 +195,13 @@ pub fn generate_id() -> String {
 }
 
 #[tauri::command]
-pub async fn connect_sftp(
+pub async fn connect(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, ConnectionState>,
     profile: Profile,
     password: Option<String>,
     trusted_fingerprint: Option<String>,
 ) -> Result<String, OmniError> {
-    if profile.protocol != ProtocolType::Sftp {
-        return Err(OmniError::Protocol(format!(
-            "Protocol {:?} is not supported yet (only SFTP is available)",
-            profile.protocol
-        )));
-    }
-
     let password = match password {
         Some(p) => Some(p),
         None if profile.save_password && needs_secret(&profile.auth_method) => {
@@ -238,7 +230,7 @@ pub async fn connect_sftp(
         let _ = app_handle.emit(PROGRESS_EVENT, event);
     });
     let (conn, initial_path) = run_blocking(move || {
-        let mut conn = SftpConnection::new(&params);
+        let mut conn = for_profile(&params)?;
         conn.connect()?;
         let initial_path = match &params.profile.remote_directory {
             Some(dir) if !dir.is_empty() => dir.clone(),
@@ -265,7 +257,7 @@ pub async fn connect_sftp(
 }
 
 #[tauri::command]
-pub async fn disconnect_sftp(state: tauri::State<'_, ConnectionState>) -> Result<(), OmniError> {
+pub async fn disconnect(state: tauri::State<'_, ConnectionState>) -> Result<(), OmniError> {
     let previous = lock(&state.0)?.take();
     match previous {
         Some(active) => run_blocking(move || active.close()).await,
@@ -286,7 +278,7 @@ pub async fn list_remote_dir(
 async fn with_connection<T, F>(state: &ConnectionState, f: F) -> Result<T, OmniError>
 where
     T: Send + 'static,
-    F: FnOnce(&SftpConnection) -> Result<T, OmniError> + Send + 'static,
+    F: FnOnce(&dyn Protocol) -> Result<T, OmniError> + Send + 'static,
 {
     let conn = {
         let guard = lock(&state.0)?;
@@ -297,7 +289,7 @@ where
     };
     run_blocking(move || {
         let conn = lock_conn(&conn);
-        f(&conn).map_err(|e| match e {
+        f(conn.as_ref()).map_err(|e| match e {
             OmniError::Permission(_) | OmniError::Config(_) => e,
             e if conn.is_alive() => e,
             _ => OmniError::ConnectionLost,
@@ -450,9 +442,9 @@ pub async fn compare_sync(
     };
     run_blocking(move || {
         let local = sync::scan_local(Path::new(&local_root), &options.excludes, &cancel)?;
-        let mut conn = SftpConnection::new(&params);
+        let mut conn = for_profile(&params)?;
         conn.connect()?;
-        let remote = sync::scan_remote(&conn, &remote_root, &options.excludes, &cancel);
+        let remote = sync::scan_remote(conn.as_ref(), &remote_root, &options.excludes, &cancel);
         let _ = conn.disconnect();
         Ok(sync::build_plan(local, remote?, &options))
     })

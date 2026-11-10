@@ -29,6 +29,8 @@ cargo test                   # Run backend tests
 cargo clippy                 # Lint backend
 ```
 
+Tests needing a real server are `#[ignore]`d. Their setup is at the top of each file in `src-tauri/tests/`: `sftp_live.rs`, `scp_live.rs` (run on both the Debian and Alpine servers, whose `ls` differ) and `transfer_live.rs` (queue and sync, over either protocol).
+
 ## Project Structure
 
 ```
@@ -52,7 +54,9 @@ cargo clippy                 # Lint backend
 
 ## Supported Protocols
 
-SFTP (over SSH), SCP (over SSH), FTP, FTPS (FTP over TLS), WebDAV / WebDAV over HTTPS
+Available: SFTP and SCP, both over SSH. These two are the v1 scope. SCP runs shell commands on the server for everything but the file bytes, so it needs a POSIX shell there.
+
+Planned for later: FTP, FTPS (FTP over TLS), WebDAV / WebDAV over HTTPS. Each implements the `Protocol` trait in `src-tauri/src/protocols/` and registers in `for_profile`.
 
 ## Architecture
 
@@ -86,7 +90,6 @@ Communication between frontend and backend uses Tauri commands (`#[tauri::comman
 ## Decisions Pending (Section 13 of spec)
 
 - Minimum OS versions per platform
-- Required vs optional protocols
 - Credential storage method
 - Concurrent transfer limits
 - File size / directory depth limits
