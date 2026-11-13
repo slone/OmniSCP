@@ -7,6 +7,8 @@ const props = defineProps<{
   label: string;
   initialValue?: string;
   confirmLabel: string;
+  /// Select the whole text rather than a file name without its extension.
+  selectAll?: boolean;
 }>();
 
 const emit = defineEmits<{ submit: [value: string]; cancel: [] }>();
@@ -20,7 +22,7 @@ onMounted(async () => {
   if (!input) return;
   input.focus();
   // Select the name without its extension, as file managers do.
-  const dot = value.value.lastIndexOf('.');
+  const dot = props.selectAll ? -1 : value.value.lastIndexOf('.');
   input.setSelectionRange(0, dot > 0 ? dot : value.value.length);
 });
 

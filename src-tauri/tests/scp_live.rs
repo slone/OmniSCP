@@ -30,6 +30,7 @@ fn params(port: u16, known_hosts: PathBuf) -> ConnectParams {
             remote_directory: None,
             description: None,
             tags: vec![],
+            group: None,
             save_password: false,
         },
         password: Some("test".into()),

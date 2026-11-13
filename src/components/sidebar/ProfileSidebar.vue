@@ -1,8 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, nextTick } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import type { Profile } from '../../types';
 import { useProfilesStore } from '../../stores/profiles';
+import { useLogStore } from '../../stores/logs';
+import { errorMessage } from '../../utils/errors';
 import ProfileDialog from './ProfileDialog.vue';
+import ProfileExchangeDialog from './ProfileExchangeDialog.vue';
+import BaseDialog from '../dialogs/BaseDialog.vue';
+import InputDialog from '../dialogs/InputDialog.vue';
 
 const profileStore = useProfilesStore();
 
@@ -10,16 +17,69 @@ const showDialog = ref(false);
 const editingProfile = ref<Profile | undefined>(undefined);
 const search = ref('');
 
+const FILE_FILTERS = [{ name: 'Profils OmniSCP', extensions: ['json'] }];
+const COLLAPSED_KEY = 'omniscp.collapsedGroups';
+
 const visibleProfiles = computed(() => {
   const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return profileStore.profiles;
   return profileStore.profiles.filter((p) => {
-    const text = [p.name, p.host, p.username, p.protocol, p.description ?? '', ...p.tags]
+    const text = [p.name, p.host, p.username, p.protocol, p.description ?? '', p.group ?? '', ...p.tags]
       .join(' ')
       .toLowerCase();
     return words.every((w) => text.includes(w));
   });
 });
+
+// --- Groups ---
+function readCollapsed(): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]');
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+const collapsed = ref(new Set<string>(readCollapsed()));
+
+function toggleGroup(name: string) {
+  const next = new Set(collapsed.value);
+  if (next.has(name)) next.delete(name);
+  else next.add(name);
+  collapsed.value = next;
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+  } catch {
+    // Only a convenience: the groups open again next time.
+  }
+}
+
+/// Groups first, then ungrouped profiles at the top level, as folders before files.
+const sections = computed(() =>
+  profileStore.groups
+    .map((name) => ({ name, items: visibleProfiles.value.filter((p) => p.group === name) }))
+    .filter((g) => g.items.length > 0),
+);
+const ungrouped = computed(() => visibleProfiles.value.filter((p) => !p.group));
+
+function isOpen(name: string) {
+  // While searching, matches are never hidden in a closed group.
+  return search.value.trim() !== '' || !collapsed.value.has(name);
+}
+
+const renamingGroup = ref<string | null>(null);
+
+function onRenameGroup(to: string) {
+  const from = renamingGroup.value;
+  renamingGroup.value = null;
+  if (from === null) return;
+  if (collapsed.value.has(from)) {
+    toggleGroup(from);
+    if (!collapsed.value.has(to)) toggleGroup(to);
+  }
+  profileStore.renameGroup(from, to);
+}
 
 onMounted(() => {
   profileStore.loadProfiles();
@@ -56,14 +116,71 @@ function onDialogCancel() {
   showDialog.value = false;
 }
 
-function onDeleteProfile(profile: Profile) {
-  if (window.confirm(`Supprimer le profil « ${profile.name} » ?`)) {
-    profileStore.deleteProfile(profile.id);
-  }
+const deleting = ref<Profile | null>(null);
+const keepRef = ref<HTMLButtonElement | null>(null);
+
+async function onDeleteProfile(profile: Profile) {
+  deleting.value = profile;
+  await nextTick();
+  // Focus the safe choice so Enter does not delete by accident.
+  keepRef.value?.focus();
+}
+
+function confirmDelete() {
+  const profile = deleting.value;
+  deleting.value = null;
+  if (profile) profileStore.deleteProfile(profile.id);
 }
 
 function onSelectProfile(id: string) {
   profileStore.selectProfile(profileStore.selectedId === id ? null : id);
+}
+
+// --- Import / export ---
+const exchange = ref<{ mode: 'import' | 'export'; profiles: Profile[]; onlyGroup?: string } | null>(null);
+const notice = ref<string | null>(null);
+
+function openExport(onlyGroup?: string) {
+  exchange.value = { mode: 'export', profiles: profileStore.profiles, onlyGroup };
+}
+
+async function openImport() {
+  let path: string | null;
+  try {
+    path = await open({ multiple: false, directory: false, filters: FILE_FILTERS });
+  } catch (err) {
+    notice.value = errorMessage(err);
+    return;
+  }
+  if (!path) return;
+  try {
+    const profiles = await invoke<Profile[]>('import_profiles', { path });
+    if (profiles.length === 0) notice.value = 'Ce fichier ne contient aucun profil.';
+    else exchange.value = { mode: 'import', profiles };
+  } catch (err) {
+    const message = errorMessage(err);
+    useLogStore().addLog('Error', 'Profils', 'Échec', `Import — ${message}`);
+    notice.value = message;
+  }
+}
+
+async function onExchangeConfirm(list: Profile[]) {
+  const mode = exchange.value?.mode;
+  exchange.value = null;
+  if (mode === 'import') {
+    await profileStore.addProfiles(list);
+    return;
+  }
+  let path: string | null;
+  try {
+    path = await save({ defaultPath: 'profils-omniscp.json', filters: FILE_FILTERS });
+  } catch (err) {
+    notice.value = errorMessage(err);
+    return;
+  }
+  if (path && !(await profileStore.exportProfiles(list, path))) {
+    notice.value = "L'export a échoué. Le détail est dans le journal.";
+  }
 }
 </script>
 
@@ -76,7 +193,8 @@ function onSelectProfile(id: string) {
         v-model="search"
         type="search"
         class="search-input"
-        placeholder="Rechercher (nom, hôte, tag…)"
+        placeholder="Rechercher…"
+        title="Nom, hôte, utilisateur, groupe, tag ou description"
         aria-label="Rechercher un profil"
         spellcheck="false"
         @keydown.esc="search = ''"
@@ -91,8 +209,47 @@ function onSelectProfile(id: string) {
         Aucun profil ne correspond
       </div>
       <ul v-else class="profile-list">
+        <li v-for="group in sections" :key="'g:' + group.name" class="group">
+          <div class="group-header">
+            <button
+              class="group-toggle"
+              :aria-expanded="isOpen(group.name)"
+              @click="toggleGroup(group.name)"
+            >
+              <span class="chevron">{{ isOpen(group.name) ? '▾' : '▸' }}</span>
+              <span class="group-name">{{ group.name }}</span>
+              <span class="group-count">{{ group.items.length }}</span>
+            </button>
+            <div class="profile-actions">
+              <button class="btn-icon" title="Renommer le groupe" @click="renamingGroup = group.name">&#9998;</button>
+              <button class="btn-icon" title="Exporter ce groupe" @click="openExport(group.name)">&#8682;</button>
+            </div>
+          </div>
+          <ul v-if="isOpen(group.name)" class="profile-list nested">
+            <li
+              v-for="profile in group.items"
+              :key="profile.id"
+              class="profile-item"
+              :class="{ active: profileStore.selectedId === profile.id }"
+              @click="onSelectProfile(profile.id)"
+            >
+              <div class="profile-info">
+                <div class="profile-name">{{ profile.name }}</div>
+                <div class="profile-detail">{{ profile.protocol }} · {{ profile.host }}</div>
+                <div v-if="profile.tags.length > 0" class="profile-tags">
+                  <span v-for="tag in profile.tags" :key="tag" class="tag">{{ tag }}</span>
+                </div>
+              </div>
+              <div class="profile-actions">
+                <button class="btn-icon" title="Modifier" @click.stop="openEditDialog(profile)">&#9998;</button>
+                <button class="btn-icon" title="Dupliquer" @click.stop="openDuplicateDialog(profile)">&#10697;</button>
+                <button class="btn-icon btn-icon-danger" title="Supprimer" @click.stop="onDeleteProfile(profile)">&#128465;</button>
+              </div>
+            </li>
+          </ul>
+        </li>
         <li
-          v-for="profile in visibleProfiles"
+          v-for="profile in ungrouped"
           :key="profile.id"
           class="profile-item"
           :class="{ active: profileStore.selectedId === profile.id }"
@@ -100,29 +257,15 @@ function onSelectProfile(id: string) {
         >
           <div class="profile-info">
             <div class="profile-name">{{ profile.name }}</div>
-            <div class="profile-detail">
-              {{ profile.protocol }} · {{ profile.host }}
-            </div>
+            <div class="profile-detail">{{ profile.protocol }} · {{ profile.host }}</div>
             <div v-if="profile.tags.length > 0" class="profile-tags">
               <span v-for="tag in profile.tags" :key="tag" class="tag">{{ tag }}</span>
             </div>
           </div>
           <div class="profile-actions">
-            <button
-              class="btn-icon"
-              title="Modifier"
-              @click.stop="openEditDialog(profile)"
-            >&#9998;</button>
-            <button
-              class="btn-icon"
-              title="Dupliquer"
-              @click.stop="openDuplicateDialog(profile)"
-            >&#10697;</button>
-            <button
-              class="btn-icon btn-icon-danger"
-              title="Supprimer"
-              @click.stop="onDeleteProfile(profile)"
-            >&#128465;</button>
+            <button class="btn-icon" title="Modifier" @click.stop="openEditDialog(profile)">&#9998;</button>
+            <button class="btn-icon" title="Dupliquer" @click.stop="openDuplicateDialog(profile)">&#10697;</button>
+            <button class="btn-icon btn-icon-danger" title="Supprimer" @click.stop="onDeleteProfile(profile)">&#128465;</button>
           </div>
         </li>
       </ul>
@@ -130,14 +273,62 @@ function onSelectProfile(id: string) {
 
     <div class="sidebar-footer">
       <button class="btn-add-profile" @click="openCreateDialog">+ Nouveau profil</button>
+      <div class="exchange">
+        <button class="btn-small" title="Ajouter des profils depuis un fichier" @click="openImport">Importer…</button>
+        <button
+          class="btn-small"
+          title="Enregistrer des profils dans un fichier, sans mot de passe"
+          :disabled="profileStore.profiles.length === 0"
+          @click="openExport()"
+        >Exporter…</button>
+      </div>
     </div>
 
     <ProfileDialog
       v-if="showDialog"
       :profile="editingProfile"
+      :groups="profileStore.groups"
       @save="onDialogSave"
       @cancel="onDialogCancel"
     />
+
+    <ProfileExchangeDialog
+      v-if="exchange"
+      :mode="exchange.mode"
+      :profiles="exchange.profiles"
+      :only-group="exchange.onlyGroup"
+      :existing="profileStore.profiles"
+      :groups="profileStore.groups"
+      @confirm="onExchangeConfirm"
+      @cancel="exchange = null"
+    />
+
+    <InputDialog
+      v-if="renamingGroup !== null"
+      title="Renommer le groupe"
+      label="Nouveau nom (un groupe existant les réunit)"
+      :initial-value="renamingGroup"
+      confirm-label="Renommer"
+      select-all
+      @submit="onRenameGroup"
+      @cancel="renamingGroup = null"
+    />
+
+    <BaseDialog v-if="deleting" title="Supprimer le profil" :width="380" @cancel="deleting = null">
+      <p class="dialog-text">Supprimer le profil « {{ deleting.name }} » ?</p>
+      <p v-if="deleting.save_password" class="dialog-text muted">Son mot de passe enregistré sera aussi effacé du trousseau.</p>
+      <template #footer>
+        <button ref="keepRef" class="btn" @click="deleting = null">Annuler</button>
+        <button class="btn btn-danger" @click="confirmDelete">Supprimer</button>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog v-if="notice" title="Profils" :width="400" @cancel="notice = null">
+      <p class="dialog-text" role="alert">{{ notice }}</p>
+      <template #footer>
+        <button class="btn btn-primary" @click="notice = null">OK</button>
+      </template>
+    </BaseDialog>
   </aside>
 </template>
 
@@ -286,8 +477,101 @@ function onSelectProfile(id: string) {
 }
 
 .sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px;
   border-top: 1px solid var(--color-border);
+}
+
+.exchange {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-small {
+  flex: 1;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: none;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.btn-small:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.btn-small:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  padding-right: 12px;
+}
+
+.group-header:hover {
+  background: var(--color-hover);
+}
+
+.group-header:hover .profile-actions {
+  display: flex;
+}
+
+.group-toggle {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chevron {
+  width: 10px;
+  color: var(--color-text-muted);
+}
+
+.group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-count {
+  color: var(--color-text-muted);
+  font-weight: normal;
+  font-size: 11px;
+}
+
+.profile-list.nested {
+  padding: 0;
+}
+
+.profile-list.nested .profile-item {
+  padding-left: 26px;
+}
+
+.dialog-text {
+  margin: 0;
+}
+
+.muted {
+  color: var(--color-text-muted);
 }
 
 .btn-add-profile {

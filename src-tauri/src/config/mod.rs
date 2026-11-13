@@ -1,4 +1,5 @@
 pub mod credentials;
+pub mod exchange;
 
 use std::path::Path;
 
@@ -19,6 +20,8 @@ pub enum AuthMethod {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
+    /// Missing in hand-written import files; a fresh one is given on import anyway.
+    #[serde(default)]
     pub id: String,
     pub name: String,
     pub host: String,
@@ -28,7 +31,11 @@ pub struct Profile {
     pub auth_method: AuthMethod,
     pub remote_directory: Option<String>,
     pub description: Option<String>,
+    #[serde(default)]
     pub tags: Vec<String>,
+    /// Folder shown in the profile list; one level, `None` for ungrouped.
+    #[serde(default)]
+    pub group: Option<String>,
     /// The password or passphrase is kept in the OS credential store (see `credentials`).
     #[serde(default)]
     pub save_password: bool,

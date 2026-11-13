@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { Profile, ProtocolType, AuthMethod } from '../../types';
+import type { Profile, ProtocolType, AuthMethod, ProbeResult } from '../../types';
+import { errorMessage, isBackendError } from '../../utils/errors';
 
 const props = defineProps<{
   profile?: Profile;
+  /// Existing group names, offered as suggestions.
+  groups?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -51,6 +54,7 @@ const keyPath = ref(
 const remoteDirectory = ref(props.profile?.remote_directory ?? '');
 const description = ref(props.profile?.description ?? '');
 const tagsText = ref(props.profile?.tags.join(', ') ?? '');
+const group = ref(props.profile?.group ?? '');
 
 const portManuallyChanged = ref(false);
 
@@ -90,31 +94,20 @@ onMounted(async () => {
 
 const validationError = ref('');
 
-async function onSave() {
-  validationError.value = '';
+/// The form's error, or null when it describes a usable profile.
+function checkForm(): string | null {
+  if (!name.value.trim()) return 'Le nom du profil est requis.';
+  if (!host.value.trim()) return "L'hôte est requis.";
+  if (!username.value.trim()) return "Le nom d'utilisateur est requis.";
+  if (!Number.isInteger(port.value) || port.value < 1 || port.value > 65535) {
+    return 'Le port doit être compris entre 1 et 65535.';
+  }
+  if (showKeyPath.value && !keyPath.value.trim()) return 'Le chemin de la clé SSH est requis.';
+  return null;
+}
 
-  if (!name.value.trim()) {
-    validationError.value = 'Le nom du profil est requis.';
-    return;
-  }
-  if (!host.value.trim()) {
-    validationError.value = "L'hôte est requis.";
-    return;
-  }
-  if (!username.value.trim()) {
-    validationError.value = "Le nom d'utilisateur est requis.";
-    return;
-  }
-  if (showKeyPath.value && !keyPath.value.trim()) {
-    validationError.value = 'Le chemin de la clé SSH est requis.';
-    return;
-  }
-  const storeSecret = needsSecret.value && savePassword.value;
-  if (storeSecret && !secret.value && !canKeepSaved.value) {
-    validationError.value = `Saisissez le ${secretLabel.value.toLowerCase()} à enregistrer.`;
-    return;
-  }
-
+/// The profile described by the form, with `id` as its id.
+function buildProfile(id: string, storeSecret: boolean): Profile {
   let authMethod: AuthMethod;
   switch (authType.value) {
     case 'Password':
@@ -136,12 +129,7 @@ async function onSave() {
     .map((t) => t.trim())
     .filter((t) => t.length > 0);
 
-  let id = props.profile?.id;
-  if (!id) {
-    id = await invoke<string>('generate_id');
-  }
-
-  const profile: Profile = {
+  return {
     id,
     name: name.value.trim(),
     host: host.value.trim(),
@@ -152,14 +140,79 @@ async function onSave() {
     remote_directory: remoteDirectory.value.trim() || undefined,
     description: description.value.trim() || undefined,
     tags,
+    group: group.value.trim() || undefined,
     save_password: storeSecret,
   };
+}
+
+async function onSave() {
+  validationError.value = checkForm() ?? '';
+  if (validationError.value) return;
+  const storeSecret = needsSecret.value && savePassword.value;
+  if (storeSecret && !secret.value && !canKeepSaved.value) {
+    validationError.value = `Saisissez le ${secretLabel.value.toLowerCase()} à enregistrer.`;
+    return;
+  }
+
+  const id = props.profile?.id || (await invoke<string>('generate_id'));
+  const profile = buildProfile(id, storeSecret);
 
   // A new profile has nothing in the keychain to forget.
   const forget = isEditing.value ? null : undefined;
   const secretChange = !storeSecret ? forget : secret.value ? secret.value : undefined;
   emit('save', profile, secretChange);
 }
+
+// --- Connection test ---
+type TestState =
+  | { status: 'running' }
+  | { status: 'ok'; result: ProbeResult }
+  | { status: 'unknown-key'; fingerprint: string }
+  | { status: 'failed'; message: string };
+
+const test = ref<TestState | null>(null);
+// Bumped by every test and edit, so a late answer about an older form is ignored.
+let testRun = 0;
+
+const canTest = computed(
+  () => !needsSecret.value || secret.value !== '' || (savePassword.value && canKeepSaved.value),
+);
+
+async function onTest(trustedFingerprint?: string) {
+  const formError = checkForm();
+  if (formError) {
+    test.value = { status: 'failed', message: formError };
+    return;
+  }
+  const run = ++testRun;
+  test.value = { status: 'running' };
+  try {
+    const result = await invoke<ProbeResult>('test_connection', {
+      profile: buildProfile(props.profile?.id ?? '', false),
+      password: needsSecret.value && secret.value ? secret.value : null,
+      useSaved: savePassword.value && canKeepSaved.value,
+      trustedFingerprint: trustedFingerprint ?? null,
+    });
+    if (run === testRun) test.value = { status: 'ok', result };
+  } catch (err) {
+    if (run !== testRun) return;
+    test.value =
+      isBackendError(err) && err.kind === 'HostKeyUnknown' && err.fingerprint
+        ? { status: 'unknown-key', fingerprint: err.fingerprint }
+        : isBackendError(err) && err.kind === 'HostKeyMismatch'
+          ? {
+              status: 'failed',
+              message: `La clé du serveur a changé (${err.fingerprint}). Connexion refusée — possible attaque de l'homme du milieu.`,
+            }
+          : { status: 'failed', message: errorMessage(err) };
+  }
+}
+
+// An answer about different settings would mislead.
+watch([host, port, protocol, username, authType, keyPath, secret, remoteDirectory], () => {
+  testRun++;
+  test.value = null;
+});
 
 function onOverlayClick(e: MouseEvent) {
   if ((e.target as HTMLElement).classList.contains('dialog-overlay')) {
@@ -230,21 +283,30 @@ function onOverlayClick(e: MouseEvent) {
           </label>
         </div>
 
-        <div v-if="needsSecret && savePassword" class="form-group">
+        <div v-if="needsSecret" class="form-group">
           <label class="form-label">{{ secretLabel }}</label>
           <input
             v-model="secret"
             type="password"
             class="form-input"
             autocomplete="new-password"
-            :placeholder="canKeepSaved ? 'Enregistré — laisser vide pour le conserver' : ''"
+            :placeholder="savePassword && canKeepSaved ? 'Enregistré — laisser vide pour le conserver' : ''"
           />
-          <span class="form-hint">Conservé dans le trousseau du système, jamais dans le fichier des profils.</span>
+          <span v-if="savePassword" class="form-hint">Conservé dans le trousseau du système, jamais dans le fichier des profils.</span>
+          <span v-else class="form-hint">Sert seulement au test : il sera demandé à chaque connexion.</span>
         </div>
 
         <div class="form-group">
           <label class="form-label">Répertoire distant initial</label>
           <input v-model="remoteDirectory" type="text" class="form-input" placeholder="/var/www" />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Groupe</label>
+          <input v-model="group" type="text" class="form-input" list="profile-groups" placeholder="Aucun" spellcheck="false" />
+          <datalist id="profile-groups">
+            <option v-for="g in groups ?? []" :key="g" :value="g" />
+          </datalist>
         </div>
 
         <div class="form-group">
@@ -258,9 +320,35 @@ function onOverlayClick(e: MouseEvent) {
         </div>
 
         <div v-if="validationError" class="form-error">{{ validationError }}</div>
+
+      </div>
+
+      <div v-if="test" class="test-result" :class="test.status" role="status">
+        <template v-if="test.status === 'running'">Test de la connexion…</template>
+        <template v-else-if="test.status === 'ok' && !test.result.directory_error">
+          Connexion réussie. Dossier de départ : <span class="mono">{{ test.result.initial_path }}</span>
+        </template>
+        <template v-else-if="test.status === 'ok'">
+          Connexion réussie, mais le répertoire distant initial n'est pas accessible :
+          {{ test.result.directory_error }}
+        </template>
+        <template v-else-if="test.status === 'unknown-key'">
+          Serveur inconnu. Vérifiez son empreinte avant de lui faire confiance :
+          <div class="mono">{{ test.fingerprint }}</div>
+          <button class="btn btn-cancel btn-trust" @click="onTest(test.fingerprint)">Faire confiance et tester</button>
+        </template>
+        <template v-else>{{ test.message }}</template>
       </div>
 
       <div class="dialog-footer">
+        <button
+          class="btn btn-cancel btn-test"
+          :disabled="test?.status === 'running' || !canTest"
+          :title="canTest ? 'Se connecter avec ces réglages, sans enregistrer' : `Saisissez le ${secretLabel.toLowerCase()} pour tester`"
+          @click="onTest()"
+        >
+          Tester
+        </button>
         <button class="btn btn-cancel" @click="emit('cancel')">Annuler</button>
         <button class="btn btn-save" @click="onSave">Enregistrer</button>
       </div>
@@ -412,5 +500,45 @@ function onOverlayClick(e: MouseEvent) {
 
 .btn-save:hover {
   background: var(--color-accent-hover);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-test {
+  margin-right: auto;
+}
+
+.test-result {
+  margin: 0 16px 12px;
+  padding: 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: var(--color-text);
+  background: var(--bg-neutral);
+  overflow-wrap: anywhere;
+}
+
+.test-result.ok {
+  background: var(--bg-success);
+}
+
+.test-result.unknown-key {
+  background: var(--bg-warning);
+}
+
+.test-result.failed {
+  background: var(--bg-danger);
+  color: var(--color-danger-text);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.btn-trust {
+  margin-top: 6px;
 }
 </style>
