@@ -11,11 +11,12 @@ use crate::config::{AppConfig, AuthMethod, Profile, credentials};
 use crate::error::OmniError;
 use crate::logging::{self, LogEntry};
 use crate::protocols::{
-    ConnectParams, FileEntry, Protocol, for_profile, remote_join, remote_parent, sort_entries, validate_file_name,
+    AccountNames, ConnectParams, FileEntry, Protocol, for_profile, remote_join, remote_parent, sort_entries, validate_file_name,
 };
 use crate::sync::{self, SyncAction, SyncOptions, SyncPlan};
 use crate::transfer::queue::{EventSink, PROGRESS_EVENT, SyncRequest, TransferQueue, TransferRequest};
 use crate::transfer::{ConflictStrategy, TransferDirection};
+use crate::tree::{self, TreeSize};
 
 pub struct ActiveConnection {
     /// Locked for the duration of network calls, which can be long (recursive delete).
@@ -24,11 +25,15 @@ pub struct ActiveConnection {
     /// For sessions opened on the side, such as long sync scans.
     params: ConnectParams,
     cancel_compare: Arc<AtomicBool>,
+    cancel_size: Arc<AtomicBool>,
+    /// Read once at connection, to show owners by name.
+    names: Arc<AccountNames>,
 }
 
 impl ActiveConnection {
     fn close(self) -> Result<(), OmniError> {
         self.cancel_compare.store(true, Ordering::Relaxed);
+        self.cancel_size.store(true, Ordering::Relaxed);
         drop(self.transfers);
         lock_conn(&self.conn).disconnect()
     }
@@ -63,6 +68,7 @@ pub fn get_parent_dir(path: String) -> Option<String> {
 pub fn list_local_dir(path: String) -> Result<Vec<FileEntry>, OmniError> {
     let dir = PathBuf::from(&path);
     let mut entries = Vec::new();
+    let mut names = local_names::Cache::default();
 
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
@@ -85,20 +91,16 @@ pub fn list_local_dir(path: String) -> Result<Vec<FileEntry>, OmniError> {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
 
-        let permissions = {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                Some(crate::protocols::format_permissions(metadata.permissions().mode(), is_dir))
-            }
-            #[cfg(not(unix))]
-            {
-                if metadata.permissions().readonly() {
-                    Some("r--".to_string())
-                } else {
-                    Some("rw-".to_string())
-                }
-            }
+        #[cfg(unix)]
+        let (permissions, mode, uid, gid) = {
+            use std::os::unix::fs::MetadataExt;
+            let mode = metadata.mode() & 0o7777;
+            (Some(crate::protocols::format_permissions(mode, is_dir)), Some(mode), Some(metadata.uid()), Some(metadata.gid()))
+        };
+        #[cfg(not(unix))]
+        let (permissions, mode, uid, gid) = {
+            let flags = if metadata.permissions().readonly() { "r--" } else { "rw-" };
+            (Some(flags.to_string()), None, None, None)
         };
 
         entries.push(FileEntry {
@@ -109,14 +111,151 @@ pub fn list_local_dir(path: String) -> Result<Vec<FileEntry>, OmniError> {
             size,
             modified,
             permissions,
-            owner: None,
-            group: None,
+            mode,
+            uid,
+            gid,
+            owner: uid.and_then(|id| local_names::user(&mut names, id)),
+            group: gid.and_then(|id| local_names::group(&mut names, id)),
         });
     }
 
     sort_entries(&mut entries);
 
     Ok(entries)
+}
+
+/// Local account names, looked up through the system so directory services count too.
+mod local_names {
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    pub struct Cache {
+        users: HashMap<u32, Option<String>>,
+        groups: HashMap<u32, Option<String>>,
+    }
+
+    pub fn user(cache: &mut Cache, id: u32) -> Option<String> {
+        cache.users.entry(id).or_insert_with(|| lookup_user(id)).clone()
+    }
+
+    pub fn group(cache: &mut Cache, id: u32) -> Option<String> {
+        cache.groups.entry(id).or_insert_with(|| lookup_group(id)).clone()
+    }
+
+    #[cfg(unix)]
+    fn lookup_user(id: u32) -> Option<String> {
+        let mut buf = vec![0 as libc::c_char; 4096];
+        let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut result = std::ptr::null_mut();
+        // SAFETY: every pointer refers to live memory of the stated size; `pw_name`
+        // points into `buf`, which outlives the read below.
+        let rc = unsafe { libc::getpwuid_r(id, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result) };
+        if rc != 0 || result.is_null() {
+            return None;
+        }
+        Some(unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) }.to_string_lossy().into_owned())
+    }
+
+    #[cfg(unix)]
+    fn lookup_group(id: u32) -> Option<String> {
+        let mut buf = vec![0 as libc::c_char; 16384];
+        let mut grp: libc::group = unsafe { std::mem::zeroed() };
+        let mut result = std::ptr::null_mut();
+        // SAFETY: as in `lookup_user`.
+        let rc = unsafe { libc::getgrgid_r(id, &mut grp, buf.as_mut_ptr(), buf.len(), &mut result) };
+        if rc != 0 || result.is_null() {
+            return None;
+        }
+        Some(unsafe { std::ffi::CStr::from_ptr(grp.gr_name) }.to_string_lossy().into_owned())
+    }
+
+    #[cfg(not(unix))]
+    fn lookup_user(_: u32) -> Option<String> {
+        None
+    }
+
+    #[cfg(not(unix))]
+    fn lookup_group(_: u32) -> Option<String> {
+        None
+    }
+}
+
+#[tauri::command]
+pub fn set_local_permissions(path: String, mode: u32) -> Result<(), OmniError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode & 0o7777))
+            .map_err(|e| OmniError::io_context(&path, e))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+        Err(OmniError::Protocol("Unix permissions do not exist on this system".into()))
+    }
+}
+
+#[tauri::command]
+pub fn local_link_target(path: String) -> Result<String, OmniError> {
+    std::fs::read_link(&path)
+        .map(|t| t.to_string_lossy().into_owned())
+        .map_err(|e| OmniError::io_context(&path, e))
+}
+
+static LOCAL_SIZE_CANCEL: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub async fn local_folder_size(paths: Vec<String>) -> Result<TreeSize, OmniError> {
+    LOCAL_SIZE_CANCEL.store(false, Ordering::Relaxed);
+    run_blocking(move || tree::local_tree_size(&paths, &LOCAL_SIZE_CANCEL)).await
+}
+
+/// On its own session, so browsing stays available meanwhile.
+#[tauri::command]
+pub async fn remote_folder_size(
+    state: tauri::State<'_, ConnectionState>,
+    paths: Vec<String>,
+) -> Result<TreeSize, OmniError> {
+    let (params, cancel) = {
+        let guard = lock(&state.0)?;
+        let active = guard
+            .as_ref()
+            .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+        active.cancel_size.store(false, Ordering::Relaxed);
+        (active.params.clone(), Arc::clone(&active.cancel_size))
+    };
+    run_blocking(move || {
+        let mut conn = for_profile(&params)?;
+        conn.connect()?;
+        let total = tree::remote_tree_size(conn.as_ref(), &paths, &cancel);
+        let _ = conn.disconnect();
+        total
+    })
+    .await
+}
+
+/// Stops both size computations; a finished one is unaffected.
+#[tauri::command]
+pub fn cancel_folder_size(state: tauri::State<'_, ConnectionState>) -> Result<(), OmniError> {
+    LOCAL_SIZE_CANCEL.store(true, Ordering::Relaxed);
+    if let Some(active) = lock(&state.0)?.as_ref() {
+        active.cancel_size.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_remote_permissions(
+    state: tauri::State<'_, ConnectionState>,
+    path: String,
+    mode: u32,
+) -> Result<(), OmniError> {
+    with_connection(&state, move |conn| conn.set_permissions(&path, mode)).await
+}
+
+#[tauri::command]
+pub async fn remote_link_target(state: tauri::State<'_, ConnectionState>, path: String) -> Result<String, OmniError> {
+    with_connection(&state, move |conn| conn.read_link(&path)).await
 }
 
 #[tauri::command]
@@ -240,12 +379,15 @@ pub async fn connect(
             Some(dir) if !dir.is_empty() => dir.clone(),
             _ => conn.realpath(".").unwrap_or_else(|_| "/".to_string()),
         };
+        let names = Arc::new(conn.account_names());
         Ok((
             ActiveConnection {
                 conn: Arc::new(Mutex::new(conn)),
                 transfers: TransferQueue::start(sink, params.clone(), workers),
                 params,
                 cancel_compare: Arc::default(),
+                cancel_size: Arc::default(),
+                names,
             },
             initial_path,
         ))
@@ -297,7 +439,13 @@ pub async fn list_remote_dir(
     state: tauri::State<'_, ConnectionState>,
     path: String,
 ) -> Result<Vec<FileEntry>, OmniError> {
-    with_connection(&state, move |conn| conn.list_dir(&path)).await
+    let names = {
+        let guard = lock(&state.0)?;
+        guard.as_ref().map(|active| Arc::clone(&active.names)).unwrap_or_default()
+    };
+    let mut entries = with_connection(&state, move |conn| conn.list_dir(&path)).await?;
+    names.name_entries(&mut entries);
+    Ok(entries)
 }
 
 /// Runs `f` on the active connection, off the main thread. A failure caused by

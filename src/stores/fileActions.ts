@@ -13,6 +13,7 @@ export type FileDialog =
   | { type: 'mkdir'; side: PaneSide }
   | { type: 'rename'; side: PaneSide; entry: FileEntry }
   | { type: 'delete'; side: PaneSide; entries: FileEntry[] }
+  | { type: 'properties'; side: PaneSide; entries: FileEntry[] }
   | { type: 'conflict'; name: string; remaining: number };
 
 export type ConflictChoice = Exclude<ConflictStrategy, 'Ask' | 'Merge'> | 'Cancel';
@@ -41,6 +42,7 @@ export const useFileActionsStore = defineStore('fileActions', () => {
   const canMkdir = computed(() => paneReady.value && !!pane(activePane.value).currentPath);
   const canRename = computed(() => paneReady.value && activeSelection.value.length === 1);
   const canDelete = computed(() => paneReady.value && activeSelection.value.length > 0);
+  const canShowProperties = canDelete;
   const canUpload = computed(() => connected.value && selectionOf('local').length > 0);
   const canDownload = computed(() => connected.value && selectionOf('remote').length > 0);
 
@@ -57,6 +59,30 @@ export const useFileActionsStore = defineStore('fileActions', () => {
   function requestDelete() {
     if (canDelete.value) {
       dialog.value = { type: 'delete', side: activePane.value, entries: activeSelection.value };
+    }
+  }
+
+  function requestProperties() {
+    if (canShowProperties.value) {
+      dialog.value = { type: 'properties', side: activePane.value, entries: activeSelection.value };
+    }
+  }
+
+  /// Applies `mode` to one entry; returns whether it worked. The pane is refreshed either way.
+  async function setPermissions(side: PaneSide, entry: FileEntry, mode: number): Promise<boolean> {
+    const store = pane(side);
+    const command = side === 'local' ? 'set_local_permissions' : 'set_remote_permissions';
+    const octal = mode.toString(8).padStart(4, '0');
+    try {
+      await invoke(command, { path: entry.path, mode });
+      useLogStore().addLog('Info', 'Droits', 'OK', `${entry.path} → ${octal}`);
+      return true;
+    } catch (err) {
+      useLogStore().addLog('Error', 'Droits', 'Échec', `${entry.path} — ${errorMessage(err)}`);
+      await useConnectionStore().handleConnectionLost(err);
+      return false;
+    } finally {
+      if (side === 'local' || useConnectionStore().connected) await store.refresh();
     }
   }
 
@@ -169,6 +195,9 @@ export const useFileActionsStore = defineStore('fileActions', () => {
     requestMkdir,
     requestRename,
     requestDelete,
+    canShowProperties,
+    requestProperties,
+    setPermissions,
     closeDialog,
     mkdir,
     rename,

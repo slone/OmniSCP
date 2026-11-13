@@ -10,6 +10,10 @@
 //!   OMNISCP_TEST_PROTOCOL=scp OMNISCP_TEST_PORT=2223 OMNISCP_TEST_BASE=/home/test \\
 //!   OMNISCP_TEST_CONTAINER=omniscp-scp-debian OMNISCP_TEST_FINGERPRINT=SHA256:... \\
 //!   cargo test --test transfer_live -- --ignored --test-threads=1
+//!
+//! `OMNISCP_TEST_CHROOT` is where the server's paths live inside the container
+//! (/home/test for the SFTP server), and `OMNISCP_TEST_OWNER` the name expected
+//! for the test account, empty when the server's account files are out of reach.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,6 +27,8 @@ use omniscp_lib::protocols::{ConnectParams, Protocol, ProtocolType, for_profile}
 use omniscp_lib::sync::{self, SyncAction, SyncActionKind, SyncMode, SyncOptions, SyncPlan};
 use omniscp_lib::transfer::queue::{SyncRequest, TransferEvent, TransferQueue, TransferRequest};
 use omniscp_lib::transfer::{ConflictStrategy, TransferDirection, TransferStatus};
+use omniscp_lib::tree::{TreeSize, remote_tree_size};
+use omniscp_lib::error::OmniError;
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
@@ -235,6 +241,58 @@ fn cancelling_keeps_the_destination_and_the_queue_running() {
     let other = h.tmp.join("other.txt");
     write(&other, b"x");
     assert_eq!(h.upload(&other, &base, ConflictStrategy::Skip).status, TransferStatus::Completed);
+    h.cleanup();
+}
+
+/// Runs a shell command inside the test container, for setup the app never does.
+fn in_container(script: &str) {
+    let status = Command::new("docker")
+        .args(["exec", "-u", "test", &env_or("OMNISCP_TEST_CONTAINER", "omniscp-sftp-test"), "sh", "-c", script])
+        .status()
+        .unwrap();
+    assert!(status.success(), "{script}");
+}
+
+#[test]
+#[ignore]
+fn permissions_links_owner_names_and_folder_size() {
+    let mut h = Harness::new("props");
+    let base = h.base.clone();
+    let file = h.tmp.join("real file.txt");
+    write(&file, b"12345");
+    h.upload(&file, &base, ConflictStrategy::Skip);
+    h.conn.mkdir(&format!("{base}/sub")).unwrap();
+    let remote_file = format!("{base}/real file.txt");
+
+    let stat = |path: &str| h.conn.stat(path).unwrap();
+    h.conn.set_permissions(&remote_file, 0o4751).unwrap();
+    assert_eq!(stat(&remote_file).mode, Some(0o4751));
+    assert_eq!(stat(&remote_file).permissions.as_deref(), Some("-rwsr-x--x"));
+    h.conn.set_permissions(&remote_file, 0o640).unwrap();
+    assert_eq!(stat(&remote_file).permissions.as_deref(), Some("-rw-r-----"));
+    h.conn.set_permissions(&format!("{base}/sub"), 0o1777).unwrap();
+    assert_eq!(stat(&format!("{base}/sub")).permissions.as_deref(), Some("drwxrwxrwt"));
+    // Never recursive, and refused where the account has no right.
+    assert!(matches!(h.conn.set_permissions("/", 0o777), Err(OmniError::Permission(_))));
+
+    let server_base = format!("{}{base}", env_or("OMNISCP_TEST_CHROOT", ""));
+    in_container(&format!("cd '{server_base}' && ln -s 'real file.txt' 'the link' && ln -s ../nowhere dangling"));
+    assert_eq!(h.conn.read_link(&format!("{base}/the link")).unwrap(), "real file.txt");
+    assert_eq!(h.conn.read_link(&format!("{base}/dangling")).unwrap(), "../nowhere");
+    assert!(h.conn.read_link(&remote_file).is_err(), "a plain file is not a link");
+
+    let mut entries = h.conn.list_dir(&base).unwrap();
+    assert!(entries.iter().all(|e| e.uid.is_some() && e.gid.is_some()));
+    h.conn.account_names().name_entries(&mut entries);
+    let expected = env_or("OMNISCP_TEST_OWNER", "test");
+    let owner = entries.iter().find(|e| e.name == "real file.txt").unwrap().owner.clone();
+    assert_eq!(owner.unwrap_or_default(), expected);
+
+    let size = remote_tree_size(h.conn.as_ref(), std::slice::from_ref(&base), &AtomicBool::new(false)).unwrap();
+    // The link to the file counts as that file, the dangling one as its own 10 bytes.
+    assert_eq!(size, TreeSize { bytes: 20, files: 3, folders: 2, unreadable: 0 });
+    let missing = remote_tree_size(h.conn.as_ref(), &[format!("{base}/nope")], &AtomicBool::new(false)).unwrap();
+    assert_eq!(missing, TreeSize { unreadable: 1, ..TreeSize::default() });
     h.cleanup();
 }
 

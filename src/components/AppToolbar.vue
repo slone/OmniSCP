@@ -153,6 +153,14 @@ function onDisconnect() {
       <button class="toolbar-btn" title="Supprimer (Suppr)" :disabled="!actions.canDelete" @click="actions.requestDelete">
         <span class="icon">&#128465;</span>
       </button>
+      <button
+        class="toolbar-btn"
+        title="Propriétés et droits (Ctrl+I / ⌘I)"
+        :disabled="!actions.canShowProperties"
+        @click="actions.requestProperties"
+      >
+        <span class="icon">&#9432;</span>
+      </button>
     </div>
 
     <div class="toolbar-separator" />

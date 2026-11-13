@@ -14,10 +14,13 @@ use ssh2::Session;
 use crate::error::{OmniError, Result};
 use crate::protocols::ssh::open_session;
 use crate::protocols::{
-    ConnectParams, CopyError, FileEntry, Progress, Protocol, copy_with_progress, format_permissions,
+    AccountNames, ConnectParams, CopyError, FileEntry, Progress, Protocol, copy_with_progress, format_permissions,
+    parse_permissions,
     remote_file_name, remote_join, sort_entries, temp_path_beside, write_local_atomically,
 };
 
+/// Account files larger than this are only read in part for names.
+const MAX_ACCOUNT_FILE: u64 = 4 * 1024 * 1024;
 const DEFAULT_FILE_MODE: i32 = 0o644;
 
 /// `ls` flags to get exact dates, best first; the first one the server accepts is kept.
@@ -154,9 +157,13 @@ impl ScpConnection {
             is_symlink: line.is_symlink,
             size: if described.is_dir { 0 } else { described.size },
             modified: described.modified,
-            permissions: Some(format_permissions(described.mode, described.is_dir)),
-            owner: Some(described.owner),
-            group: Some(described.group),
+            permissions: Some(format_permissions(described.full_mode, described.is_dir)),
+            mode: Some(described.full_mode),
+            // `ls -n` gives numbers; a server that still prints a name keeps it.
+            uid: described.owner.parse().ok(),
+            gid: described.group.parse().ok(),
+            owner: described.owner.parse::<u32>().is_err().then(|| described.owner.clone()),
+            group: described.group.parse::<u32>().is_err().then(|| described.group.clone()),
         }
     }
 }
@@ -259,6 +266,37 @@ impl Protocol for ScpConnection {
             &format!("env LC_ALL=C mv -- {} {}", shell_quote(from), shell_quote(to)),
             || format!("Failed to rename {from} -> {to}"),
         )
+    }
+
+    fn set_permissions(&self, path: &str, mode: u32) -> Result<()> {
+        self.run_checked(
+            &format!("env LC_ALL=C chmod {:o} -- {}", mode & 0o7777, shell_quote(path)),
+            || format!("Failed to change the permissions of {path}"),
+        )
+    }
+
+    fn read_link(&self, path: &str) -> Result<String> {
+        let output = self.run(&format!("env LC_ALL=C readlink -- {}", shell_quote(path)))?;
+        if !output.success {
+            return Err(command_err(format!("Failed to read the link {path}"), &output.stderr));
+        }
+        let mut target = output.stdout;
+        // Only the line end readlink adds: a target may itself end with a newline.
+        if target.last() == Some(&b'\n') {
+            target.pop();
+        }
+        Ok(String::from_utf8_lossy(&target).into_owned())
+    }
+
+    fn account_names(&self) -> AccountNames {
+        let read = |path: &str| {
+            self.run(&format!("head -c {MAX_ACCOUNT_FILE} {path}"))
+                .ok()
+                .filter(|o| o.success)
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default()
+        };
+        AccountNames::parse(&read("/etc/passwd"), &read("/etc/group"))
     }
 
     fn remove_empty_dir(&self, path: &str) -> Result<()> {
@@ -393,6 +431,8 @@ struct LsLine {
     is_dir: bool,
     is_symlink: bool,
     mode: u32,
+    /// With setuid, setgid and sticky bits, for display and chmod.
+    full_mode: u32,
     owner: String,
     group: String,
     size: u64,
@@ -551,6 +591,7 @@ fn parse_ls_line(line: &str, escaped: bool, now: i64) -> Option<LsLine> {
         is_dir: kind == 'd',
         is_symlink: kind == 'l',
         mode: mode_bits(permissions),
+        full_mode: parse_permissions(permissions),
         owner: owner.to_string(),
         group: group.to_string(),
         size,
