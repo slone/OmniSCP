@@ -6,13 +6,16 @@ use ssh2::{ErrorCode, Session, Sftp};
 use crate::error::{OmniError, Result};
 use crate::protocols::ssh::open_session;
 use crate::protocols::{
-    ConnectParams, CopyError, FileEntry, Progress, Protocol, copy_with_progress, format_permissions,
+    AccountNames, ConnectParams, CopyError, FileEntry, Progress, Protocol, copy_with_progress, format_permissions,
     remote_join, sort_entries, temp_path_beside, write_local_atomically,
 };
 
 // SFTP status codes (draft-ietf-secsh-filexfer-02, section 7).
 const SFTP_NO_SUCH_FILE: i32 = 2;
 const SFTP_PERMISSION_DENIED: i32 = 3;
+
+/// Account files larger than this are not read for names.
+const MAX_ACCOUNT_FILE: u64 = 4 * 1024 * 1024;
 
 /// Maps an SFTP failure to a permission error when the server says so.
 fn sftp_err(context: String, err: ssh2::Error) -> OmniError {
@@ -81,7 +84,8 @@ fn file_stat_to_entry(path: PathBuf, stat: &ssh2::FileStat, is_symlink: bool) ->
         .map(|p| p & 0o170000 == 0o040000)
         .unwrap_or(false);
 
-    let permissions = stat.perm.map(|p| format_permissions(p & 0o7777, is_dir));
+    let mode = stat.perm.map(|p| p & 0o7777);
+    let permissions = mode.map(|m| format_permissions(m, is_dir));
 
     FileEntry {
         name,
@@ -91,8 +95,11 @@ fn file_stat_to_entry(path: PathBuf, stat: &ssh2::FileStat, is_symlink: bool) ->
         size: stat.size.unwrap_or(0),
         modified: stat.mtime.map(|t| t as i64),
         permissions,
-        owner: stat.uid.map(|u| u.to_string()),
-        group: stat.gid.map(|g| g.to_string()),
+        mode,
+        uid: stat.uid,
+        gid: stat.gid,
+        owner: None,
+        group: None,
     }
 }
 
@@ -236,6 +243,33 @@ impl Protocol for SftpConnection {
             let _ = sftp.unlink(Path::new(&temp));
         }
         result
+    }
+
+    fn set_permissions(&self, path: &str, mode: u32) -> Result<()> {
+        let stat = ssh2::FileStat { size: None, uid: None, gid: None, perm: Some(mode & 0o7777), atime: None, mtime: None };
+        self.sftp()?
+            .setstat(Path::new(path), stat)
+            .map_err(|e| sftp_err(format!("Failed to change the permissions of {path}"), e))
+    }
+
+    fn read_link(&self, path: &str) -> Result<String> {
+        let target = self
+            .sftp()?
+            .readlink(Path::new(path))
+            .map_err(|e| sftp_err(format!("Failed to read the link {path}"), e))?;
+        Ok(target.to_string_lossy().into_owned())
+    }
+
+    fn account_names(&self) -> AccountNames {
+        let read = |path: &str| -> Option<String> {
+            let sftp = self.sftp().ok()?;
+            let mut file = sftp.open(Path::new(path)).ok()?;
+            let mut data = Vec::new();
+            use std::io::Read;
+            (&mut file).take(MAX_ACCOUNT_FILE).read_to_end(&mut data).ok()?;
+            Some(String::from_utf8_lossy(&data).into_owned())
+        };
+        AccountNames::parse(&read("/etc/passwd").unwrap_or_default(), &read("/etc/group").unwrap_or_default())
     }
 
     fn download(&self, remote: &str, local: &Path, progress: Progress) -> Result<()> {

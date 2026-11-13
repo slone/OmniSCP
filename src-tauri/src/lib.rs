@@ -5,6 +5,7 @@ pub mod logging;
 pub mod protocols;
 pub mod sync;
 pub mod transfer;
+pub mod tree;
 
 use commands::ConnectionState;
 
@@ -41,6 +42,13 @@ pub fn run() {
             commands::set_saved_password,
             commands::has_saved_password,
             commands::load_settings,
+            commands::set_local_permissions,
+            commands::set_remote_permissions,
+            commands::local_link_target,
+            commands::remote_link_target,
+            commands::local_folder_size,
+            commands::remote_folder_size,
+            commands::cancel_folder_size,
             commands::save_settings,
         ])
         .run(tauri::generate_context!())

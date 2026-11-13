@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import type { FileEntry, Profile } from '../types';
 import { useLogStore } from './logs';
+import { useNavHistory, type NavKind } from '../utils/history';
 import { errorMessage, isBackendError } from '../utils/errors';
 import { useTransfersStore } from './transfers';
 
@@ -16,6 +17,7 @@ export const useConnectionStore = defineStore('connection', () => {
   const selected = ref<string[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  const history = useNavHistory();
 
   async function connect(profile: Profile, password?: string, trustedFingerprint?: string) {
     const logStore = useLogStore();
@@ -66,6 +68,7 @@ export const useConnectionStore = defineStore('connection', () => {
       profileId.value = null;
       profileName.value = null;
       currentPath.value = '';
+      history.reset();
       files.value = [];
       selected.value = [];
       loading.value = false;
@@ -80,7 +83,7 @@ export const useConnectionStore = defineStore('connection', () => {
     error.value = 'La connexion au serveur a été perdue. Reconnectez-vous pour continuer.';
   }
 
-  async function navigateTo(path: string) {
+  async function navigateTo(path: string, kind: NavKind = 'new') {
     const logStore = useLogStore();
     loading.value = true;
     error.value = null;
@@ -95,6 +98,7 @@ export const useConnectionStore = defineStore('connection', () => {
         selected.value = selected.value.filter((p) => still.has(p));
       }
       files.value = result;
+      history.moved(currentPath.value, path, kind);
       currentPath.value = path;
       logStore.addLog('Info', 'Navigation distante', 'OK', `${path} — ${result.length} élément(s)`);
     } catch (err) {
@@ -113,9 +117,20 @@ export const useConnectionStore = defineStore('connection', () => {
     navigateTo(parent);
   }
 
-  function refresh() {
+  async function goBack() {
+    const target = history.previous();
+    // One step per click, even if the listing is still loading.
+    if (target && !loading.value) await navigateTo(target, 'back');
+  }
+
+  async function goForward() {
+    const target = history.next();
+    if (target && !loading.value) await navigateTo(target, 'forward');
+  }
+
+  async function refresh() {
     if (currentPath.value) {
-      navigateTo(currentPath.value);
+      await navigateTo(currentPath.value);
     }
   }
 
@@ -134,6 +149,10 @@ export const useConnectionStore = defineStore('connection', () => {
     handleConnectionLost,
     navigateTo,
     navigateUp,
+    goBack,
+    goForward,
+    canGoBack: history.canGoBack,
+    canGoForward: history.canGoForward,
     refresh,
   };
 });

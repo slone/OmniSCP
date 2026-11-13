@@ -32,8 +32,22 @@ export interface FileEntry {
   size: number;
   modified?: number;
   permissions?: string;
+  /// Permission bits including setuid/setgid/sticky; absent where Unix permissions do not exist.
+  mode?: number;
+  uid?: number;
+  gid?: number;
+  /// Account names, when the system could tell them.
   owner?: string;
   group?: string;
+}
+
+/// Payload of `local_folder_size` / `remote_folder_size` (src-tauri/src/tree.rs).
+export interface TreeSize {
+  bytes: number;
+  files: number;
+  folders: number;
+  /// Folders that could not be listed: the totals are then a minimum.
+  unreadable: number;
 }
 
 export type TransferDirection = 'Upload' | 'Download';

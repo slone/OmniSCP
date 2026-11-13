@@ -3,6 +3,7 @@ pub mod sftp;
 pub mod ssh;
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -72,29 +73,91 @@ pub struct FileEntry {
     pub size: u64,
     pub modified: Option<i64>,
     pub permissions: Option<String>,
+    /// Permission bits, special ones included (0o7777 at most).
+    pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    /// Account names, filled in by `AccountNames::name_entries` when they are known.
     pub owner: Option<String>,
     pub group: Option<String>,
 }
 
-/// Renders Unix mode bits as `drwxr-xr-x`.
+/// User and group names by number, read once per connection from the account files.
+#[derive(Debug, Default, Clone)]
+pub struct AccountNames {
+    users: HashMap<u32, String>,
+    groups: HashMap<u32, String>,
+}
+
+impl AccountNames {
+    /// Reads `/etc/passwd` and `/etc/group` formats (`name:x:id:...`); odd lines are ignored.
+    pub fn parse(passwd: &str, group: &str) -> Self {
+        fn ids(text: &str) -> HashMap<u32, String> {
+            let mut map = HashMap::new();
+            for line in text.lines().filter(|l| !l.starts_with('#')) {
+                let mut fields = line.split(':');
+                let (Some(name), Some(_), Some(id)) = (fields.next(), fields.next(), fields.next()) else {
+                    continue;
+                };
+                if let Ok(id) = id.parse() {
+                    // The first entry wins, as for the system's own lookups.
+                    map.entry(id).or_insert_with(|| name.to_string());
+                }
+            }
+            map
+        }
+        Self { users: ids(passwd), groups: ids(group) }
+    }
+
+    pub fn name_entries(&self, entries: &mut [FileEntry]) {
+        for entry in entries {
+            if let Some(name) = entry.uid.and_then(|id| self.users.get(&id)) {
+                entry.owner = Some(name.clone());
+            }
+            if let Some(name) = entry.gid.and_then(|id| self.groups.get(&id)) {
+                entry.group = Some(name.clone());
+            }
+        }
+    }
+}
+
+/// Execute bits and the special bit sharing their column: setuid, setgid, sticky.
+const EXEC_COLUMNS: [(u32, u32, char); 3] = [(0o100, 0o4000, 's'), (0o010, 0o2000, 's'), (0o001, 0o1000, 't')];
+
+/// Renders Unix mode bits as `drwxr-xr-x`, with `s`/`S`/`t`/`T` for the special bits as `ls` does.
 pub fn format_permissions(mode: u32, is_dir: bool) -> String {
-    const BITS: [(u32, char); 9] = [
-        (0o400, 'r'),
-        (0o200, 'w'),
-        (0o100, 'x'),
-        (0o040, 'r'),
-        (0o020, 'w'),
-        (0o010, 'x'),
-        (0o004, 'r'),
-        (0o002, 'w'),
-        (0o001, 'x'),
-    ];
     let mut s = String::with_capacity(10);
     s.push(if is_dir { 'd' } else { '-' });
-    for (bit, c) in BITS {
-        s.push(if mode & bit != 0 { c } else { '-' });
+    for (shift, (exec, special, letter)) in [6, 3, 0].into_iter().zip(EXEC_COLUMNS) {
+        s.push(if mode & (0o4 << shift) != 0 { 'r' } else { '-' });
+        s.push(if mode & (0o2 << shift) != 0 { 'w' } else { '-' });
+        s.push(match (mode & exec != 0, mode & special != 0) {
+            (true, true) => letter,
+            (false, true) => letter.to_ascii_uppercase(),
+            (true, false) => 'x',
+            (false, false) => '-',
+        });
     }
     s
+}
+
+/// Reads back what `format_permissions` (or `ls -l`) writes; anything after the 10th character is ignored.
+pub fn parse_permissions(text: &str) -> u32 {
+    let chars: Vec<char> = text.chars().skip(1).take(9).collect();
+    let mut mode = 0;
+    for (column, (exec, special, _)) in EXEC_COLUMNS.into_iter().enumerate() {
+        let shift = 6 - 3 * column as u32;
+        let at = |i: usize| chars.get(column * 3 + i).copied().unwrap_or('-');
+        if at(0) == 'r' { mode |= 0o4 << shift; }
+        if at(1) == 'w' { mode |= 0o2 << shift; }
+        match at(2) {
+            'x' => mode |= exec,
+            's' | 't' => mode |= exec | special,
+            'S' | 'T' => mode |= special,
+            _ => {}
+        }
+    }
+    mode
 }
 
 /// Sort: directories first, then case-insensitive alphabetical.
@@ -269,11 +332,64 @@ pub trait Protocol: Send + Sync {
     fn exists(&self, path: &str) -> bool {
         self.stat(path).is_ok()
     }
+    /// Sets the permission bits (at most 0o7777) of one file or folder, never recursively.
+    fn set_permissions(&self, path: &str, mode: u32) -> Result<()>;
+    /// Where a symlink points, as stored in the link.
+    fn read_link(&self, path: &str) -> Result<String>;
+    /// The server's account names; empty when they cannot be read (a chroot, for instance).
+    fn account_names(&self) -> AccountNames {
+        AccountNames::default()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permissions_round_trip_with_special_bits() {
+        for (mode, text) in [
+            (0o755, "-rwxr-xr-x"),
+            (0o644, "-rw-r--r--"),
+            (0o4755, "-rwsr-xr-x"),
+            (0o2750, "-rwxr-s---"),
+            (0o1777, "-rwxrwxrwt"),
+            (0o4644, "-rwSr--r--"),
+            (0o1640, "-rw-r----T"),
+            (0, "----------"),
+        ] {
+            assert_eq!(format_permissions(mode, false), text);
+            assert_eq!(parse_permissions(text), mode, "{text}");
+        }
+        assert_eq!(parse_permissions("-rw-r--r--+"), 0o644);
+        assert_eq!(parse_permissions("-rw-r--r--@"), 0o644);
+    }
+
+    #[test]
+    fn account_names_from_system_files() {
+        let names = AccountNames::parse(
+            "# comment\nroot:x:0:0:root:/root:/bin/sh\ndeploy:x:1000:1000::/home/deploy:/bin/bash\nbroken\ndup:x:1000:1:::\n",
+            "root:x:0:\nwww-data:x:33:deploy\n",
+        );
+        let entry = |uid, gid| FileEntry {
+            name: "f".into(),
+            path: "/f".into(),
+            is_dir: false,
+            is_symlink: false,
+            size: 0,
+            modified: None,
+            permissions: None,
+            mode: None,
+            uid: Some(uid),
+            gid: Some(gid),
+            owner: None,
+            group: None,
+        };
+        let mut entries = [entry(1000, 33), entry(4242, 4242)];
+        names.name_entries(&mut entries);
+        assert_eq!((entries[0].owner.as_deref(), entries[0].group.as_deref()), (Some("deploy"), Some("www-data")));
+        assert_eq!((entries[1].owner.as_deref(), entries[1].group.as_deref()), (None, None));
+    }
 
     #[test]
     fn remote_paths() {

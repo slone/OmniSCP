@@ -26,11 +26,19 @@ const props = defineProps<{
   selected: string[];
   active: boolean;
   loading?: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  /// Why the last navigation failed; the previous listing stays shown.
+  error?: string | null;
 }>();
 
 const emit = defineEmits<{
   navigate: [path: string];
   'navigate-up': [];
+  back: [];
+  forward: [];
+  refresh: [];
+  properties: [];
   'update:selected': [paths: string[]];
   activate: [];
   mkdir: [];
@@ -97,6 +105,12 @@ function ariaSort(key: SortKey) {
   return sort.value.ascending ? 'ascending' : 'descending';
 }
 
+function ownerTitle(file: FileEntry) {
+  const user = file.owner ?? file.uid;
+  const group = file.group ?? file.gid;
+  return user === undefined ? '' : `Propriétaire : ${user}${group === undefined ? '' : ` — groupe : ${group}`}`;
+}
+
 function onFilterKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') filterText.value = '';
 }
@@ -110,6 +124,8 @@ watch(() => props.path, (val) => {
 function onPathKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter') {
     emit('navigate', editPath.value);
+  } else if (e.key === 'Escape') {
+    editPath.value = props.path;
   }
 }
 
@@ -164,10 +180,32 @@ function onListKeydown(e: KeyboardEvent) {
   } else if (e.key === 'Enter' && props.selected.length === 1) {
     const file = visibleFiles.value.find((f) => f.path === props.selected[0]);
     if (file) onDblClick(file);
+  } else if ((e.altKey && e.key === 'ArrowLeft') || (mod && e.key === '[')) {
+    e.preventDefault();
+    emit('back');
+  } else if ((e.altKey && e.key === 'ArrowRight') || (mod && e.key === ']')) {
+    e.preventDefault();
+    emit('forward');
+  } else if ((e.altKey || mod) && e.key === 'ArrowUp') {
+    e.preventDefault();
+    emit('navigate-up');
+  } else if (mod && e.key.toLowerCase() === 'r') {
+    // Also keeps the webview from reloading the whole app.
+    e.preventDefault();
+    emit('refresh');
+  } else if ((mod && e.key.toLowerCase() === 'i') || (e.altKey && e.key === 'Enter')) {
+    e.preventDefault();
+    emit('properties');
   } else if (e.key === 'Backspace') {
     e.preventDefault();
     emit('navigate-up');
   }
+}
+
+/// The back and forward buttons of a mouse.
+function onMouseUp(e: MouseEvent) {
+  if (e.button === 3) emit('back');
+  else if (e.button === 4) emit('forward');
 }
 
 function onDragStart(e: DragEvent, file: FileEntry) {
@@ -204,6 +242,7 @@ function onDrop(e: DragEvent) {
   <div
     :class="['file-pane', { 'pane-active': active, 'drop-target': dropTarget }]"
     @mousedown="emit('activate')"
+    @mouseup="onMouseUp"
     @dragover="onDragOver"
     @dragleave="dropTarget = false"
     @drop="onDrop"
@@ -225,6 +264,10 @@ function onDrop(e: DragEvent) {
     </div>
 
     <div class="path-bar">
+      <button class="nav-btn" title="Précédent (Alt+←)" aria-label="Précédent" :disabled="!canGoBack" @click="emit('back')">←</button>
+      <button class="nav-btn" title="Suivant (Alt+→)" aria-label="Suivant" :disabled="!canGoForward" @click="emit('forward')">→</button>
+      <button class="nav-btn" title="Dossier parent (Retour arrière)" aria-label="Dossier parent" @click="emit('navigate-up')">↑</button>
+      <button class="nav-btn" title="Actualiser (Ctrl+R / ⌘R)" aria-label="Actualiser" @click="emit('refresh')">↻</button>
       <input
         type="text"
         class="path-input"
@@ -232,6 +275,8 @@ function onDrop(e: DragEvent) {
         @keydown="onPathKeydown"
       />
     </div>
+
+    <div v-if="error" class="pane-error" role="alert">{{ error }}</div>
 
     <div class="file-list-container" tabindex="0" @keydown="onListKeydown" @focus="emit('activate')">
       <div v-if="props.loading" class="loading-indicator">Chargement...</div>
@@ -242,6 +287,7 @@ function onDrop(e: DragEvent) {
             <th class="col-size sortable" :aria-sort="ariaSort('size')" @click="sortBy('size')">Taille{{ sortMark('size') }}</th>
             <th class="col-date sortable" :aria-sort="ariaSort('modified')" @click="sortBy('modified')">Modifié{{ sortMark('modified') }}</th>
             <th class="col-perms">Droits</th>
+            <th class="col-owner">Propriétaire</th>
           </tr>
         </thead>
         <tbody>
@@ -253,6 +299,7 @@ function onDrop(e: DragEvent) {
             <td class="col-size"></td>
             <td class="col-date"></td>
             <td class="col-perms"></td>
+            <td class="col-owner"></td>
           </tr>
           <tr
             v-for="(file, index) in visibleFiles"
@@ -270,6 +317,7 @@ function onDrop(e: DragEvent) {
             <td class="col-size">{{ file.is_dir ? '' : formatSize(file.size) }}</td>
             <td class="col-date">{{ formatDate(file.modified) }}</td>
             <td class="col-perms">{{ file.permissions ?? '' }}</td>
+            <td class="col-owner" :title="ownerTitle(file)">{{ file.owner ?? file.uid ?? '' }}</td>
           </tr>
         </tbody>
       </table>
@@ -333,12 +381,46 @@ function onDrop(e: DragEvent) {
 }
 
 .path-bar {
+  display: flex;
+  gap: 2px;
   padding: 4px;
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
 }
 
+.pane-error {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-danger-border);
+  background: var(--bg-danger);
+  color: var(--color-danger-text);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.nav-btn {
+  width: 24px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--color-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.nav-btn:hover:not(:disabled) {
+  background: var(--color-hover);
+  border-color: var(--color-border);
+}
+
+.nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .path-input {
+  flex: 1;
+  min-width: 0;
   width: 100%;
   padding: 3px 6px;
   border: 1px solid var(--color-border);
@@ -437,12 +519,17 @@ function onDrop(e: DragEvent) {
 }
 
 .col-date {
-  width: 130px;
+  width: 120px;
 }
 
 .col-perms {
   width: 80px;
   font-family: var(--font-mono);
+}
+
+.col-owner {
+  width: 105px;
+  max-width: 105px;
 }
 
 .file-icon {

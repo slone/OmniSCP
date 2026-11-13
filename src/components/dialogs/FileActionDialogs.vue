@@ -3,6 +3,7 @@ import { useFileActionsStore } from '../../stores/fileActions';
 import InputDialog from './InputDialog.vue';
 import ConfirmDeleteDialog from './ConfirmDeleteDialog.vue';
 import ConflictDialog from './ConflictDialog.vue';
+import PropertiesDialog from './PropertiesDialog.vue';
 
 const actions = useFileActionsStore();
 </script>
@@ -32,6 +33,12 @@ const actions = useFileActionsStore();
       :remote="actions.dialog.side === 'remote'"
       @confirm="actions.dialog?.type === 'delete' && actions.remove(actions.dialog.side, actions.dialog.entries)"
       @cancel="actions.closeDialog"
+    />
+    <PropertiesDialog
+      v-else-if="actions.dialog.type === 'properties'"
+      :side="actions.dialog.side"
+      :entries="actions.dialog.entries"
+      @close="actions.closeDialog"
     />
     <ConflictDialog
       v-else-if="actions.dialog.type === 'conflict'"
