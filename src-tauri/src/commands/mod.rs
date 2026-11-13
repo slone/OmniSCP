@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use tauri::{Emitter, Manager};
 
-use crate::config::{AppConfig, AuthMethod, Profile, credentials};
+use crate::config::{AppConfig, AuthMethod, Profile, credentials, exchange};
 use crate::error::OmniError;
 use crate::logging::{self, LogEntry};
 use crate::protocols::{
-    AccountNames, ConnectParams, FileEntry, Protocol, for_profile, remote_join, remote_parent, sort_entries, validate_file_name,
+    AccountNames, ConnectParams, FileEntry, ProbeResult, Protocol, for_profile, probe, remote_join, remote_parent, sort_entries, validate_file_name,
 };
 use crate::sync::{self, SyncAction, SyncOptions, SyncPlan};
 use crate::transfer::queue::{EventSink, PROGRESS_EVENT, SyncRequest, TransferQueue, TransferRequest};
@@ -298,6 +298,18 @@ pub fn save_profiles(
     Ok(())
 }
 
+/// Writes the given profiles to a file for another machine. Returns how many were written.
+#[tauri::command]
+pub async fn export_profiles(path: String, profiles: Vec<Profile>) -> Result<usize, OmniError> {
+    run_blocking(move || exchange::export(Path::new(&path), &profiles)).await
+}
+
+/// Reads a profile file; the profiles come back with new ids and are not saved yet.
+#[tauri::command]
+pub async fn import_profiles(path: String) -> Result<Vec<Profile>, OmniError> {
+    run_blocking(move || exchange::import(Path::new(&path), generate_id)).await
+}
+
 fn needs_secret(auth: &AuthMethod) -> bool {
     matches!(auth, AuthMethod::Password | AuthMethod::KeyWithPassphrase { .. })
 }
@@ -400,6 +412,38 @@ pub async fn connect(
     }
 
     Ok(initial_path)
+}
+
+/// Tries a profile, possibly unsaved, without touching the current connection.
+/// `use_saved`: take the secret from the credential store when `password` is absent.
+#[tauri::command]
+pub async fn test_connection(
+    app_handle: tauri::AppHandle,
+    profile: Profile,
+    password: Option<String>,
+    use_saved: bool,
+    trusted_fingerprint: Option<String>,
+) -> Result<ProbeResult, OmniError> {
+    let password = match password {
+        Some(p) => Some(p),
+        None if use_saved && needs_secret(&profile.auth_method) => {
+            let id = profile.id.clone();
+            run_blocking(move || credentials::get(&id)).await?
+        }
+        None => None,
+    };
+    let known_hosts_path = app_handle
+        .path()
+        .app_config_dir()
+        .map_err(|e| OmniError::Config(e.to_string()))?
+        .join("known_hosts");
+    let params = ConnectParams {
+        profile,
+        password,
+        known_hosts_path,
+        trusted_fingerprint,
+    };
+    run_blocking(move || probe(&params)).await
 }
 
 const SETTINGS_FILE: &str = "settings.json";

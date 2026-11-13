@@ -13,6 +13,7 @@ use commands::ConnectionState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(ConnectionState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_home_dir,
@@ -50,6 +51,9 @@ pub fn run() {
             commands::remote_folder_size,
             commands::cancel_folder_size,
             commands::save_settings,
+            commands::export_profiles,
+            commands::import_profiles,
+            commands::test_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

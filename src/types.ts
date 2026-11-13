@@ -19,6 +19,8 @@ export interface Profile {
   remote_directory?: string;
   description?: string;
   tags: string[];
+  /// Folder in the profile list; one level.
+  group?: string;
   /// Password/passphrase kept in the OS credential store, never in this object.
   save_password?: boolean;
 }
@@ -148,4 +150,11 @@ export interface AppConfig {
   concurrent_transfers: number;
   show_hidden_files: boolean;
   default_conflict: DefaultConflict;
+}
+
+/// Result of a connection test from the profile editor.
+export interface ProbeResult {
+  initial_path: string;
+  /// The login worked but the starting folder could not be listed.
+  directory_error: string | null;
 }

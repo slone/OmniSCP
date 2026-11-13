@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use omniscp_lib::config::{AuthMethod, Profile};
-use omniscp_lib::protocols::{ConnectParams, Protocol, ProtocolType, for_profile};
+use omniscp_lib::protocols::{ConnectParams, Protocol, ProtocolType, for_profile, probe};
 use omniscp_lib::sync::{self, SyncAction, SyncActionKind, SyncMode, SyncOptions, SyncPlan};
 use omniscp_lib::transfer::queue::{SyncRequest, TransferEvent, TransferQueue, TransferRequest};
 use omniscp_lib::transfer::{ConflictStrategy, TransferDirection, TransferStatus};
@@ -70,6 +70,7 @@ impl Harness {
                 remote_directory: None,
                 description: None,
                 tags: vec![],
+                group: None,
                 save_password: false,
             },
             password: Some("test".into()),
@@ -611,4 +612,35 @@ fn retry_copies_only_what_is_missing() {
     // Nothing missing any more.
     assert_eq!(h.upload(&source, &base, ConflictStrategy::Merge).status, TransferStatus::Skipped);
     h.cleanup();
+}
+
+#[test]
+#[ignore]
+fn connection_test_checks_login_and_starting_folder() {
+    let h = Harness::new("probe");
+    let with = |change: &dyn Fn(&mut ConnectParams)| {
+        let mut params = h.params.clone();
+        change(&mut params);
+        probe(&params)
+    };
+
+    let home = with(&|_| {}).unwrap();
+    assert!(home.initial_path.starts_with('/'), "{}", home.initial_path);
+    assert_eq!(home.directory_error, None);
+
+    let folder = with(&|p| p.profile.remote_directory = Some(h.base.clone())).unwrap();
+    assert_eq!(folder.initial_path, h.base);
+    assert_eq!(folder.directory_error, None);
+
+    // The login works, the folder doesn't: reported, not an error.
+    let missing = with(&|p| p.profile.remote_directory = Some(format!("{}/missing", h.base))).unwrap();
+    assert!(missing.directory_error.is_some());
+
+    assert!(matches!(with(&|p| p.password = Some("wrong".into())), Err(OmniError::Auth(_))));
+
+    let unknown = with(&|p| {
+        p.known_hosts_path = h.tmp.join("other_known_hosts");
+        p.trusted_fingerprint = None;
+    });
+    assert!(matches!(unknown, Err(OmniError::HostKeyUnknown(_))), "{unknown:?}");
 }

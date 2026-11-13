@@ -23,6 +23,7 @@ fn params(fingerprint: Option<String>, known_hosts: std::path::PathBuf) -> Conne
             remote_directory: None,
             description: None,
             tags: vec![],
+            group: None,
             save_password: false,
         },
         password: Some("test".into()),

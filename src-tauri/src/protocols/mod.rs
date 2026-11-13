@@ -30,6 +30,33 @@ pub fn for_profile(params: &ConnectParams) -> Result<Box<dyn Protocol>> {
     }
 }
 
+/// What a connection test found, the session being closed again.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProbeResult {
+    /// Where browsing would start.
+    pub initial_path: String,
+    /// The profile's starting folder could not be listed; the login itself worked.
+    pub directory_error: Option<String>,
+}
+
+/// Connects with `params`, checks the starting folder and disconnects.
+pub fn probe(params: &ConnectParams) -> Result<ProbeResult> {
+    let mut conn = for_profile(params)?;
+    conn.connect()?;
+    let result = match params.profile.remote_directory.as_deref().filter(|d| !d.is_empty()) {
+        Some(dir) => ProbeResult {
+            initial_path: dir.to_string(),
+            directory_error: conn.list_dir(dir).err().map(|e| e.to_string()),
+        },
+        None => ProbeResult {
+            initial_path: conn.realpath(".").unwrap_or_else(|_| "/".to_string()),
+            directory_error: None,
+        },
+    };
+    let _ = conn.disconnect();
+    Ok(result)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProtocolType {
     Sftp,
