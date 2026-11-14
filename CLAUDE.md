@@ -77,6 +77,10 @@ The Vue frontend handles the UI:
 
 Communication between frontend and backend uses Tauri commands (`#[tauri::command]` in Rust, `invoke()` in TypeScript).
 
+### Content Security Policy
+
+The webview runs under a strict CSP (`app.security.csp` in `tauri.conf.json`): only the app's own scripts and stylesheets, and no network but Tauri's IPC. Keep it that way: no inline `<style>` or `style="…"` strings built at run time, no `v-html`, nothing loaded from a CDN. Vue's `:style` bindings are fine (they go through the CSSOM). `devCsp` only relaxes what Vite's dev server needs.
+
 ### Languages
 
 The interface is in French and English (setting: system, fr or en). Every visible text lives in `src/i18n/fr.ts`, the reference, and `src/i18n/en.ts`, which TypeScript holds to the same shape; components read them through `t` (`t.toolbar.connect`, `t.common.items(n)`). The backend never sends sentences: an `OmniError` carries a `Msg` with a code, its values and the raw system or server text as `detail` (`src-tauri/src/error.rs`), and the frontend translates the code from the `errors` section. A unit test fails when a code built in Rust has no translation in either dictionary. Journal entries are written in the language of the moment.
