@@ -6,6 +6,7 @@ import type { EditInfo, FileEntry } from '../types';
 import { useLogStore } from './logs';
 import { useConnectionStore } from './connection';
 import { errorMessage, isBackendError } from '../utils/errors';
+import { t } from '../i18n';
 
 export interface EditedFile extends EditInfo {
   /// conflict: the server's copy changed since it was opened; the save waits for the user.
@@ -41,10 +42,10 @@ export const useEditsStore = defineStore('edits', () => {
       const info = await invoke<EditInfo>('edit_remote_file', { path: entry.path });
       if (!files.value.some((f) => f.id === info.id)) {
         files.value.push({ ...info, state: 'watching' });
-        log.addLog('Info', 'Édition', 'Ouvert', `${info.remote_path} — copie locale ${info.local_path}`);
+        log.addLog('Info', t.log.edit, t.log.editOpened, t.log.editLocalCopy(info.remote_path, info.local_path));
       }
     } catch (err) {
-      log.addLog('Error', 'Édition', 'Échec', `${entry.path} — ${errorMessage(err)}`);
+      log.addLog('Error', t.log.edit, t.log.failed, `${entry.path} — ${errorMessage(err)}`);
       await useConnectionStore().handleConnectionLost(err);
     }
   }
@@ -66,7 +67,7 @@ export const useEditsStore = defineStore('edits', () => {
       await invoke('upload_edited_file', { id, force });
       file.state = 'watching';
       file.sentAt = Date.now();
-      log.addLog('Info', 'Édition', 'Envoyé', file.remote_path);
+      log.addLog('Info', t.log.edit, t.log.editSent, file.remote_path);
       const connection = useConnectionStore();
       if (connection.currentPath === parentOf(file.remote_path)) await connection.refresh();
       if (file.again) {
@@ -78,10 +79,10 @@ export const useEditsStore = defineStore('edits', () => {
       file.error = message;
       if (isBackendError(err) && err.kind === 'Conflict') {
         file.state = 'conflict';
-        log.addLog('Warning', 'Édition', 'Conflit', `${message} — modification locale non envoyée`);
+        log.addLog('Warning', t.log.edit, t.log.editConflict, `${message} — ${t.log.editNotSent}`);
       } else {
         file.state = 'error';
-        log.addLog('Error', 'Édition', 'Échec', `${file.remote_path} — ${message}`);
+        log.addLog('Error', t.log.edit, t.log.failed, `${file.remote_path} — ${message}`);
         await useConnectionStore().handleConnectionLost(err);
       }
       attention.value++;
@@ -101,18 +102,13 @@ export const useEditsStore = defineStore('edits', () => {
     await invoke('stop_editing', { id }).catch(() => {});
     const file = files.value.find((f) => f.id === id);
     files.value = files.value.filter((f) => f.id !== id);
-    if (file) useLogStore().addLog('Info', 'Édition', 'Arrêtée', file.remote_path);
+    if (file) useLogStore().addLog('Info', t.log.edit, t.log.editStopped, file.remote_path);
   }
 
   /// The backend forgets the edits with the connection; local copies stay on disk.
   function reset() {
     if (files.value.length > 0) {
-      useLogStore().addLog(
-        'Info',
-        'Édition',
-        'Arrêtée',
-        `${files.value.length} fichier(s) ne sont plus surveillés ; les copies locales sont conservées`,
-      );
+      useLogStore().addLog('Info', t.log.edit, t.log.editStopped, t.log.editsForgotten(files.value.length));
     }
     files.value = [];
   }

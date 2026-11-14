@@ -11,12 +11,12 @@ use std::time::UNIX_EPOCH;
 
 use ssh2::Session;
 
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 use crate::protocols::ssh::open_session;
 use crate::protocols::{
     AccountNames, ConnectParams, CopyError, FileEntry, Progress, Protocol, copy_with_progress, format_permissions,
     parse_permissions,
-    remote_file_name, remote_join, sort_entries, temp_path_beside, write_local_atomically,
+    not_found, remote_file_name, remote_join, sort_entries, temp_path_beside, write_local_atomically,
 };
 
 /// Account files larger than this are only read in part for names.
@@ -52,18 +52,19 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-fn command_err(context: String, stderr: &str) -> OmniError {
+fn command_err(context: Msg, stderr: &str) -> OmniError {
     let detail = stderr.trim();
+    let context = if detail.is_empty() { context } else { context.detail(detail) };
     if detail.contains("Permission denied") || detail.contains("Operation not permitted") {
-        OmniError::Permission(format!("{context}: {detail}"))
+        OmniError::Permission(context)
     } else if detail.contains("No such file") {
-        OmniError::Protocol(format!("{context}: no such file or directory"))
+        OmniError::Protocol(not_found(&context))
     } else {
-        OmniError::Protocol(format!("{context}: {detail}"))
+        OmniError::Protocol(context)
     }
 }
 
-fn scp_err(context: String, err: ssh2::Error) -> OmniError {
+fn scp_err(context: Msg, err: ssh2::Error) -> OmniError {
     command_err(context, &err.to_string())
 }
 
@@ -87,12 +88,12 @@ impl ScpConnection {
     fn session(&self) -> Result<&Session> {
         self.session
             .as_ref()
-            .ok_or_else(|| OmniError::Protocol("Not connected".into()))
+            .ok_or_else(|| OmniError::Protocol(Msg::new("conn.notConnected")))
     }
 
     fn run(&self, command: &str) -> Result<CommandOutput> {
-        let failed = |e: ssh2::Error| OmniError::Protocol(format!("Failed to run a command on the server: {e}"));
-        let io_failed = |e: std::io::Error| OmniError::Protocol(format!("Failed to run a command on the server: {e}"));
+        let failed = |e: ssh2::Error| OmniError::Protocol(Msg::new("scp.command").detail(e));
+        let io_failed = |e: std::io::Error| OmniError::Protocol(Msg::new("scp.command").detail(e));
 
         let mut channel = self.session()?.channel_session().map_err(failed)?;
         channel.exec(command).map_err(failed)?;
@@ -112,7 +113,7 @@ impl ScpConnection {
     }
 
     /// Runs a command that only reports success or failure.
-    fn run_checked(&self, command: &str, context: impl FnOnce() -> String) -> Result<()> {
+    fn run_checked(&self, command: &str, context: impl FnOnce() -> Msg) -> Result<()> {
         let output = self.run(command)?;
         if output.success {
             Ok(())
@@ -130,7 +131,7 @@ impl ScpConnection {
         if output.success {
             Ok(output.stdout)
         } else {
-            Err(command_err(format!("Failed to list {path}"), &output.stderr))
+            Err(command_err(Msg::new("remote.list").with("path", path), &output.stderr))
         }
     }
 
@@ -140,7 +141,7 @@ impl ScpConnection {
         let text = String::from_utf8_lossy(&stdout);
         let line = text.lines().next().unwrap_or_default();
         parse_ls_line(line, self.ls.escaped, now())
-            .ok_or_else(|| OmniError::Protocol(format!("Could not understand the listing of {path}")))
+            .ok_or_else(|| OmniError::Protocol(Msg::new("scp.listing").with("path", path)))
     }
 
     fn to_entry(&self, path: String, name: String, line: LsLine) -> FileEntry {
@@ -195,9 +196,7 @@ impl Protocol for ScpConnection {
             }
         }
         self.disconnect()?;
-        Err(OmniError::Protocol(
-            "This server does not allow running the commands SCP needs (it may only allow SFTP)".into(),
-        ))
+        Err(OmniError::Protocol(Msg::new("scp.noShell")))
     }
 
     fn disconnect(&mut self) -> Result<()> {
@@ -220,7 +219,7 @@ impl Protocol for ScpConnection {
     fn realpath(&self, path: &str) -> Result<String> {
         let output = self.run(&format!("cd -- {} && pwd -P", shell_quote(path)))?;
         if !output.success {
-            return Err(command_err(format!("realpath failed for {path}"), &output.stderr));
+            return Err(command_err(Msg::new("remote.realpath").with("path", path), &output.stderr));
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim_end_matches('\n').to_string())
     }
@@ -237,7 +236,7 @@ impl Protocol for ScpConnection {
                 continue;
             }
             let parsed = parse_ls_line(line, self.ls.escaped, now()).ok_or_else(|| {
-                OmniError::Protocol(format!("Could not understand the listing of {path}: \"{line}\""))
+                OmniError::Protocol(Msg::new("scp.listing").with("path", path).detail(line))
             })?;
             let name = parsed.name.clone();
             // Without escapes, `ls` may print `?` for what it cannot show. Believing it
@@ -246,9 +245,9 @@ impl Protocol for ScpConnection {
                 && name.contains('?')
                 && self.stat_line(&remote_join(path, &name), false).is_err()
             {
-                return Err(OmniError::Protocol(format!(
-                    "Could not read the name of an item in {path}: the server shows it as \"{name}\""
-                )));
+                return Err(OmniError::Protocol(
+                    Msg::new("scp.unreadableName").with("path", path).with("name", &name),
+                ));
             }
             files.push(self.to_entry(remote_join(path, &name), name, parsed));
         }
@@ -263,28 +262,28 @@ impl Protocol for ScpConnection {
 
     fn mkdir(&self, path: &str) -> Result<()> {
         self.run_checked(&format!("env LC_ALL=C mkdir -- {}", shell_quote(path)), || {
-            format!("Failed to create directory {path}")
+            Msg::new("remote.mkdir").with("path", path)
         })
     }
 
     fn rename(&self, from: &str, to: &str) -> Result<()> {
         self.run_checked(
             &format!("env LC_ALL=C mv -- {} {}", shell_quote(from), shell_quote(to)),
-            || format!("Failed to rename {from} -> {to}"),
+            || Msg::new("remote.rename").with("from", from).with("to", to),
         )
     }
 
     fn set_permissions(&self, path: &str, mode: u32) -> Result<()> {
         self.run_checked(
             &format!("env LC_ALL=C chmod {:o} -- {}", mode & 0o7777, shell_quote(path)),
-            || format!("Failed to change the permissions of {path}"),
+            || Msg::new("remote.chmod").with("path", path),
         )
     }
 
     fn read_link(&self, path: &str) -> Result<String> {
         let output = self.run(&format!("env LC_ALL=C readlink -- {}", shell_quote(path)))?;
         if !output.success {
-            return Err(command_err(format!("Failed to read the link {path}"), &output.stderr));
+            return Err(command_err(Msg::new("remote.readlink").with("path", path), &output.stderr));
         }
         let mut target = output.stdout;
         // Only the line end readlink adds: a target may itself end with a newline.
@@ -307,14 +306,14 @@ impl Protocol for ScpConnection {
 
     fn remove_empty_dir(&self, path: &str) -> Result<()> {
         self.run_checked(&format!("env LC_ALL=C rmdir -- {}", shell_quote(path)), || {
-            format!("Failed to remove directory {path}")
+            Msg::new("remote.rmdir").with("path", path)
         })
     }
 
     fn delete(&self, path: &str) -> Result<()> {
         // `rm` removes a symlink as a link, never following it.
         self.run_checked(&format!("env LC_ALL=C rm -rf -- {}", shell_quote(path)), || {
-            format!("Failed to delete {path}")
+            Msg::new("remote.delete").with("path", path)
         })
     }
 
@@ -322,7 +321,7 @@ impl Protocol for ScpConnection {
         // Follows links: `mv` would otherwise drop the file inside a linked folder.
         let existing = self.stat(remote).ok();
         if existing.as_ref().is_some_and(|e| e.is_dir) {
-            return Err(OmniError::Transfer(format!("{remote} is a directory")));
+            return Err(OmniError::Transfer(Msg::new("transfer.targetIsFolder").with("path", remote)));
         }
         // A replaced file keeps its permissions.
         let mode = existing
@@ -330,10 +329,10 @@ impl Protocol for ScpConnection {
             .map_or(DEFAULT_FILE_MODE, |p| mode_bits(&p) as i32);
 
         let mut local_file = std::fs::File::open(local)
-            .map_err(|e| OmniError::io_context(format!("Failed to open {}", local.display()), e))?;
+            .map_err(|e| OmniError::io_context(local.display(), e))?;
         let metadata = local_file
             .metadata()
-            .map_err(|e| OmniError::io_context(format!("Failed to read {}", local.display()), e))?;
+            .map_err(|e| OmniError::io_context(local.display(), e))?;
         let size = metadata.len();
         // Keep the source's date, which sync compares.
         let times = metadata
@@ -343,13 +342,13 @@ impl Protocol for ScpConnection {
             .map(|d| (d.as_secs(), d.as_secs()));
 
         let temp = temp_path_beside(remote);
-        let write_err = |e: ssh2::Error| OmniError::Transfer(format!("Failed to write {remote}: {e}"));
+        let write_err = |e: ssh2::Error| OmniError::Transfer(Msg::new("remote.write").with("path", remote).detail(e));
 
         let sent = (|| {
             let mut channel = self
                 .session()?
                 .scp_send(Path::new(&temp), mode, size, times)
-                .map_err(|e| scp_err(format!("Failed to create a temporary file for {remote}"), e))?;
+                .map_err(|e| scp_err(Msg::new("remote.tempFile").with("path", remote), e))?;
 
             // The server was promised exactly `size` bytes.
             let mut copied = 0;
@@ -360,18 +359,18 @@ impl Protocol for ScpConnection {
             })
             .map_err(|e| match e {
                 CopyError::Cancelled => OmniError::Cancelled,
-                CopyError::Read(e) => OmniError::io_context(format!("Failed to read {}", local.display()), e),
-                CopyError::Write(e) => OmniError::Transfer(format!("Failed to write {remote}: {e}")),
+                CopyError::Read(e) => OmniError::io_context(local.display(), e),
+                CopyError::Write(e) => OmniError::Transfer(Msg::new("remote.write").with("path", remote).detail(e)),
             })?;
             if copied != size {
-                return Err(OmniError::Transfer(format!("{} changed while it was being sent", local.display())));
+                return Err(OmniError::Transfer(Msg::new("transfer.changedWhileSending").with("path", local.display())));
             }
 
             // The SCP protocol ends a file with a zero byte, which libssh2 leaves to the caller.
             // Without it the server sees a lost connection and does not apply the date.
             channel
                 .write_all(&[0])
-                .map_err(|e| OmniError::Transfer(format!("Failed to write {remote}: {e}")))?;
+                .map_err(|e| OmniError::Transfer(Msg::new("remote.write").with("path", remote).detail(e)))?;
             channel.send_eof().map_err(write_err)?;
             channel.wait_eof().map_err(write_err)?;
             channel.close().map_err(write_err)?;
@@ -379,7 +378,7 @@ impl Protocol for ScpConnection {
             if channel.exit_status().map_err(write_err)? != 0 {
                 let mut detail = String::new();
                 let _ = channel.stderr().read_to_string(&mut detail);
-                return Err(command_err(format!("The server failed to write {remote}"), &detail));
+                return Err(command_err(Msg::new("remote.write").with("path", remote), &detail));
             }
             Ok(())
         })();
@@ -388,7 +387,7 @@ impl Protocol for ScpConnection {
         let result = sent.and_then(|()| {
             self.run_checked(
                 &format!("env LC_ALL=C mv -f -- {} {}", shell_quote(&temp), shell_quote(remote)),
-                || format!("Failed to write {remote}"),
+                || Msg::new("remote.write").with("path", remote),
             )
         });
         if result.is_err() {
@@ -400,12 +399,12 @@ impl Protocol for ScpConnection {
     fn download(&self, remote: &str, local: &Path, progress: Progress) -> Result<()> {
         let entry = self.stat(remote)?;
         if entry.is_dir {
-            return Err(OmniError::Transfer(format!("{remote} is a directory")));
+            return Err(OmniError::Transfer(Msg::new("transfer.targetIsFolder").with("path", remote)));
         }
         let (channel, stat) = self
             .session()?
             .scp_recv(Path::new(remote))
-            .map_err(|e| scp_err(format!("Failed to open remote file {remote}"), e))?;
+            .map_err(|e| scp_err(Msg::new("remote.open").with("path", remote), e))?;
         let size = stat.size();
         let mut limited = channel.take(size);
         let mtime = entry.modified.and_then(|m| u64::try_from(m).ok());
@@ -418,14 +417,14 @@ impl Protocol for ScpConnection {
             })
             .map_err(|e| match e {
                 CopyError::Cancelled => OmniError::Cancelled,
-                CopyError::Read(e) => OmniError::Transfer(format!("Failed to read {remote}: {e}")),
-                CopyError::Write(e) => OmniError::io_context(format!("Failed to write {}", local.display()), e),
+                CopyError::Read(e) => OmniError::Transfer(Msg::new("remote.read").with("path", remote).detail(e)),
+                CopyError::Write(e) => OmniError::io_context(local.display(), e),
             })?;
             // A connection dropping mid-file can look like an early end of file.
             if copied != size {
-                return Err(OmniError::Transfer(format!(
-                    "Failed to read {remote}: got {copied} of {size} bytes"
-                )));
+                return Err(OmniError::Transfer(
+                    Msg::new("remote.readShort").with("path", remote).with("got", copied).with("size", size),
+                ));
             }
             Ok(())
         })

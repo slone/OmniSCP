@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::Profile;
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 
 pub const FORMAT: &str = "omniscp-profiles";
 pub const VERSION: u32 = 1;
@@ -35,7 +35,7 @@ pub fn export(path: &Path, profiles: &[Profile]) -> Result<usize> {
             })
             .collect(),
     };
-    let data = serde_json::to_string_pretty(&file).map_err(|e| OmniError::Config(e.to_string()))?;
+    let data = serde_json::to_string_pretty(&file).map_err(|e| OmniError::Config(Msg::new("profiles.encode").detail(e)))?;
     let tmp = path.with_extension("omniscp-tmp");
     std::fs::write(&tmp, data).map_err(|e| OmniError::io_context(tmp.display(), e))?;
     std::fs::rename(&tmp, path).map_err(|e| OmniError::io_context(path.display(), e))?;
@@ -49,31 +49,30 @@ pub fn import(path: &Path, mut new_id: impl FnMut() -> String) -> Result<Vec<Pro
         .map_err(|e| OmniError::io_context(path.display(), e))?
         .len();
     if size > MAX_FILE {
-        return Err(OmniError::Config(format!("{}: too large for a profile file", path.display())));
+        return Err(OmniError::Config(Msg::new("profiles.tooLarge").with("path", path.display())));
     }
     let data = std::fs::read_to_string(path).map_err(|e| OmniError::io_context(path.display(), e))?;
     let value: Value = serde_json::from_str(&data)
-        .map_err(|e| OmniError::Config(format!("{}: not valid JSON ({e})", path.display())))?;
+        .map_err(|e| OmniError::Config(Msg::new("profiles.notJson").with("path", path.display()).detail(e)))?;
 
     let entries = match value {
         Value::Array(entries) => entries,
         Value::Object(mut file) => {
             if file.get("format").and_then(Value::as_str) != Some(FORMAT) {
-                return Err(OmniError::Config(format!("{}: not an OmniSCP profile file", path.display())));
+                return Err(OmniError::Config(Msg::new("profiles.notOurs").with("path", path.display())));
             }
             let version = file.get("version").and_then(Value::as_u64).unwrap_or(0);
             if version > VERSION as u64 {
-                return Err(OmniError::Config(format!(
-                    "{}: written by a newer version of OmniSCP (format {version})",
-                    path.display()
-                )));
+                return Err(OmniError::Config(
+                    Msg::new("profiles.tooNew").with("path", path.display()).with("version", version),
+                ));
             }
             match file.remove("profiles") {
                 Some(Value::Array(entries)) => entries,
-                _ => return Err(OmniError::Config(format!("{}: no profile list", path.display()))),
+                _ => return Err(OmniError::Config(Msg::new("profiles.noList").with("path", path.display()))),
             }
         }
-        _ => return Err(OmniError::Config(format!("{}: not an OmniSCP profile file", path.display()))),
+        _ => return Err(OmniError::Config(Msg::new("profiles.notOurs").with("path", path.display()))),
     };
 
     entries
@@ -81,8 +80,10 @@ pub fn import(path: &Path, mut new_id: impl FnMut() -> String) -> Result<Vec<Pro
         .enumerate()
         .map(|(i, entry)| {
             let profile: Profile = serde_json::from_value(entry)
-                .map_err(|e| OmniError::Config(format!("profile {}: {e}", i + 1)))?;
-            let profile = cleaned(profile).map_err(|e| OmniError::Config(format!("profile {}: {e}", i + 1)))?;
+                .map_err(|e| OmniError::Config(Msg::new("profiles.invalidEntry").with("index", i + 1).detail(e)))?;
+            let profile = cleaned(profile).map_err(|e| {
+                OmniError::Config(Msg::new("profiles.invalidEntry").with("index", i + 1).cause(OmniError::Config(e)))
+            })?;
             Ok(Profile {
                 id: new_id(),
                 ..profile
@@ -91,22 +92,22 @@ pub fn import(path: &Path, mut new_id: impl FnMut() -> String) -> Result<Vec<Pro
         .collect()
 }
 
-fn cleaned(p: Profile) -> std::result::Result<Profile, String> {
+fn cleaned(p: Profile) -> std::result::Result<Profile, Msg> {
     let non_empty = |s: Option<String>| s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let name = p.name.trim().to_string();
     let host = p.host.trim().to_string();
     let username = p.username.trim().to_string();
     if name.is_empty() {
-        return Err("missing name".into());
+        return Err(Msg::new("profiles.missingName"));
     }
     if host.is_empty() {
-        return Err(format!("« {name} »: missing host"));
+        return Err(Msg::new("profiles.missingHost").with("name", name));
     }
     if username.is_empty() {
-        return Err(format!("« {name} »: missing user name"));
+        return Err(Msg::new("profiles.missingUser").with("name", name));
     }
     if p.port == 0 {
-        return Err(format!("« {name} »: port 0"));
+        return Err(Msg::new("profiles.portZero").with("name", name));
     }
     let mut tags: Vec<String> = Vec::new();
     for tag in p.tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
@@ -202,18 +203,18 @@ mod tests {
         let expect_error = |content: &str, needle: &str| {
             std::fs::write(&path, content).unwrap();
             match import(&path, ids()) {
-                Err(OmniError::Config(msg)) => assert!(msg.contains(needle), "{msg}"),
+                Err(OmniError::Config(msg)) => assert!(msg.to_string().contains(needle), "{msg}"),
                 other => panic!("expected a Config error for {content}, got {other:?}"),
             }
         };
 
-        expect_error("not json", "not valid JSON");
-        expect_error(r#"{"settings":{}}"#, "not an OmniSCP profile file");
-        expect_error(r#"{"format":"omniscp-profiles","version":9,"profiles":[]}"#, "newer version");
-        expect_error(r#"[{"name":"a","host":"h","port":22,"protocol":"Sftp","username":"u"}]"#, "profile 1");
+        expect_error("not json", "profiles.notJson");
+        expect_error(r#"{"settings":{}}"#, "profiles.notOurs");
+        expect_error(r#"{"format":"omniscp-profiles","version":9,"profiles":[]}"#, "profiles.tooNew");
+        expect_error(r#"[{"name":"a","host":"h","port":22,"protocol":"Sftp","username":"u"}]"#, "profiles.invalidEntry index=\"1\"");
         expect_error(
             r#"[{"name":"a","host":" ","port":22,"protocol":"Sftp","username":"u","auth_method":{"type":"Agent"}}]"#,
-            "missing host",
+            "profiles.missingHost",
         );
 
         std::fs::remove_dir_all(&dir).unwrap();

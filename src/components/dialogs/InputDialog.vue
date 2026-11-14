@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue';
+import { ref, onMounted, nextTick, useId } from 'vue';
 import BaseDialog from './BaseDialog.vue';
+import { t } from '../../i18n';
 
 const props = defineProps<{
   title: string;
@@ -15,6 +16,7 @@ const emit = defineEmits<{ submit: [value: string]; cancel: [] }>();
 
 const value = ref(props.initialValue ?? '');
 const inputRef = ref<HTMLInputElement | null>(null);
+const inputId = useId();
 
 onMounted(async () => {
   await nextTick();
@@ -35,11 +37,11 @@ function onSubmit() {
 <template>
   <BaseDialog :title="title" @cancel="emit('cancel')">
     <form class="form-group" @submit.prevent="onSubmit">
-      <label class="form-label">{{ label }}</label>
-      <input ref="inputRef" v-model="value" type="text" class="form-input" autocomplete="off" spellcheck="false" />
+      <label class="form-label" :for="inputId">{{ label }}</label>
+      <input :id="inputId" ref="inputRef" v-model="value" type="text" class="form-input" autocomplete="off" spellcheck="false" />
     </form>
     <template #footer>
-      <button class="btn" @click="emit('cancel')">Annuler</button>
+      <button class="btn" @click="emit('cancel')">{{ t.common.cancel }}</button>
       <button class="btn btn-primary" :disabled="!value.trim()" @click="onSubmit">{{ confirmLabel }}</button>
     </template>
   </BaseDialog>

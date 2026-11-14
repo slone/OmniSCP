@@ -388,7 +388,7 @@ fn one_bad_file_does_not_stop_a_folder_upload() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
 
     assert_eq!(event.status, TransferStatus::CompletedWithWarnings);
-    let error = event.error.unwrap();
+    let error = format!("{:?}", event.errors);
     assert!(error.contains("b-locked.txt"), "{error}");
     assert!(error.contains("d-loop"), "{error}");
     let mut names = h.remote_names(&format!("{base}/tree"));
@@ -406,7 +406,7 @@ fn failures_are_not_reported_as_success() {
     let missing = h.tmp.join("missing.txt");
     let event = h.upload(&missing, &base, ConflictStrategy::Skip);
     assert_eq!(event.status, TransferStatus::Failed);
-    assert!(event.error.is_some());
+    assert!(!event.errors.is_empty());
 
     // Root of the chroot is not writable.
     let file = h.tmp.join("f.txt");
@@ -456,7 +456,7 @@ fn survives_a_dropped_connection() {
     let second = h.tmp.join("g.txt");
     write(&second, b"y");
     let event = h.upload(&second, &base, ConflictStrategy::Skip);
-    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.error);
+    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.errors);
 
     h.conn.connect().unwrap();
     h.cleanup();
@@ -490,7 +490,7 @@ fn sync_upload_then_nothing_left_to_do() {
         ("empty", SyncActionKind::CreateRemoteDir),
     ]);
     let event = h.run_sync(&root, &base, plan.actions);
-    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.error);
+    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.errors);
 
     // Dates were preserved, so nothing differs any more, in any mode.
     assert!(h.plan(&root, &base, &options(SyncMode::Upload, false)).actions.is_empty());
@@ -547,7 +547,7 @@ fn sync_deletes_only_when_asked_and_keeps_excluded_content() {
         ("olddir/x.txt", SyncActionKind::DeleteRemote),
     ]);
     let event = h.run_sync(&root, &base, plan.actions);
-    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.error);
+    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.errors);
 
     let mut names = h.remote_names(&base);
     names.sort();
@@ -580,7 +580,7 @@ fn sync_leaves_files_changed_since_the_preview() {
 
     let event = h.run_sync(&root, &base, plan.actions);
     assert_eq!(event.status, TransferStatus::CompletedWithWarnings);
-    assert!(event.error.unwrap().contains("a.txt"));
+    assert!(format!("{:?}", event.errors).contains("a.txt"));
 
     let back = h.tmp.join("back");
     h.conn.download(&format!("{base}/a.txt"), &back, &mut |_| true).unwrap();
@@ -609,7 +609,7 @@ fn sync_does_not_delete_what_it_could_not_read() {
 
     assert!(plan.actions.is_empty(), "{:?}", plan.actions);
     assert_eq!(plan.problems.len(), 1);
-    assert!(plan.problems[0].contains("locked"));
+    assert!(plan.problems[0].to_string().contains("locked"));
     h.cleanup();
 }
 
@@ -632,7 +632,7 @@ fn retry_copies_only_what_is_missing() {
     // Changed locally since: the retry must not overwrite what is there.
     write(&source.join("good.txt"), b"second");
     let event = h.upload(&source, &base, ConflictStrategy::Merge);
-    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.error);
+    assert_eq!(event.status, TransferStatus::Completed, "{:?}", event.errors);
 
     let back = h.tmp.join("back");
     h.conn.download(&format!("{base}/tree/good.txt"), &back, &mut |_| true).unwrap();
@@ -657,11 +657,11 @@ fn connection_test_checks_login_and_starting_folder() {
 
     let home = with(&|_| {}).unwrap();
     assert!(home.initial_path.starts_with('/'), "{}", home.initial_path);
-    assert_eq!(home.directory_error, None);
+    assert!(home.directory_error.is_none(), "{:?}", home.directory_error);
 
     let folder = with(&|p| p.profile.remote_directory = Some(h.base.clone())).unwrap();
     assert_eq!(folder.initial_path, h.base);
-    assert_eq!(folder.directory_error, None);
+    assert!(folder.directory_error.is_none(), "{:?}", folder.directory_error);
 
     // The login works, the folder doesn't: reported, not an error.
     let missing = with(&|p| p.profile.remote_directory = Some(format!("{}/missing", h.base))).unwrap();
@@ -704,7 +704,7 @@ fn pausing_holds_jobs_and_keeps_the_session() {
 
     h.queue.resume(&a);
     let done = h.wait_finished(&a);
-    assert_eq!(done.status, TransferStatus::Completed, "{:?}", done.error);
+    assert_eq!(done.status, TransferStatus::Completed, "{:?}", done.errors);
     assert_eq!(h.conn.stat(&format!("{base}/big.bin")).unwrap().size, size as u64);
     assert_eq!(h.wait_finished(&b).status, TransferStatus::Completed);
     h.assert_quiet(Duration::from_secs(1));

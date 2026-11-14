@@ -77,6 +77,10 @@ The Vue frontend handles the UI:
 
 Communication between frontend and backend uses Tauri commands (`#[tauri::command]` in Rust, `invoke()` in TypeScript).
 
+### Languages
+
+The interface is in French and English (setting: system, fr or en). Every visible text lives in `src/i18n/fr.ts`, the reference, and `src/i18n/en.ts`, which TypeScript holds to the same shape; components read them through `t` (`t.toolbar.connect`, `t.common.items(n)`). The backend never sends sentences: an `OmniError` carries a `Msg` with a code, its values and the raw system or server text as `detail` (`src-tauri/src/error.rs`), and the frontend translates the code from the `errors` section. A unit test fails when a code built in Rust has no translation in either dictionary. Journal entries are written in the language of the moment.
+
 ## Key Functional Requirements
 
 - Dual-pane local/remote file navigation
@@ -95,4 +99,3 @@ Communication between frontend and backend uses Tauri commands (`#[tauri::comman
 - File size / directory depth limits
 - CLI/scripting support scope
 - Log retention policy
-- i18n scope (French confirmed; others TBD)

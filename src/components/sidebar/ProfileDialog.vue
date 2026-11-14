@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, watch, computed, onMounted } from 'vue';
+import { ref, watch, computed, onMounted, useId } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { Profile, ProtocolType, AuthMethod, ProbeResult } from '../../types';
 import { errorMessage, isBackendError } from '../../utils/errors';
+import BaseDialog from '../dialogs/BaseDialog.vue';
+import { t } from '../../i18n';
 
 const props = defineProps<{
   profile?: Profile;
@@ -30,12 +32,16 @@ const defaultPorts: Record<ProtocolType, number> = {
 };
 
 type AuthType = 'Password' | 'KeyFile' | 'KeyWithPassphrase' | 'Agent';
-const allAuthTypes: { value: AuthType; label: string }[] = [
-  { value: 'Password', label: 'Mot de passe' },
-  { value: 'KeyFile', label: 'Clé SSH' },
-  { value: 'KeyWithPassphrase', label: 'Clé + passphrase' },
-  { value: 'Agent', label: 'Agent SSH' },
-];
+const allAuthTypes = computed<{ value: AuthType; label: string }[]>(() => [
+  { value: 'Password', label: t.profile.authPassword },
+  { value: 'KeyFile', label: t.profile.authKey },
+  { value: 'KeyWithPassphrase', label: t.profile.authKeyPassphrase },
+  { value: 'Agent', label: t.profile.authAgent },
+]);
+
+/// Ties each label to its field.
+const ids = useId();
+const fieldId = (name: string) => `${ids}-${name}`;
 
 // A duplicate arrives without an id: it is saved as a new profile.
 const isEditing = computed(() => !!props.profile?.id);
@@ -75,7 +81,8 @@ const showKeyPath = computed(
 const needsSecret = computed(
   () => authType.value === 'Password' || authType.value === 'KeyWithPassphrase',
 );
-const secretLabel = computed(() => (authType.value === 'Password' ? 'Mot de passe' : 'Passphrase'));
+const isPassword = computed(() => authType.value === 'Password');
+const secretLabel = computed(() => (isPassword.value ? t.profile.password : t.profile.passphrase));
 const savePassword = ref(props.profile?.save_password ?? false);
 const secret = ref('');
 const hasSaved = ref(false);
@@ -96,13 +103,13 @@ const validationError = ref('');
 
 /// The form's error, or null when it describes a usable profile.
 function checkForm(): string | null {
-  if (!name.value.trim()) return 'Le nom du profil est requis.';
-  if (!host.value.trim()) return "L'hôte est requis.";
-  if (!username.value.trim()) return "Le nom d'utilisateur est requis.";
+  if (!name.value.trim()) return t.profile.nameRequired;
+  if (!host.value.trim()) return t.profile.hostRequired;
+  if (!username.value.trim()) return t.profile.userRequired;
   if (!Number.isInteger(port.value) || port.value < 1 || port.value > 65535) {
-    return 'Le port doit être compris entre 1 et 65535.';
+    return t.profile.portRange;
   }
-  if (showKeyPath.value && !keyPath.value.trim()) return 'Le chemin de la clé SSH est requis.';
+  if (showKeyPath.value && !keyPath.value.trim()) return t.profile.keyRequired;
   return null;
 }
 
@@ -150,7 +157,7 @@ async function onSave() {
   if (validationError.value) return;
   const storeSecret = needsSecret.value && savePassword.value;
   if (storeSecret && !secret.value && !canKeepSaved.value) {
-    validationError.value = `Saisissez le ${secretLabel.value.toLowerCase()} à enregistrer.`;
+    validationError.value = isPassword.value ? t.profile.enterPassword : t.profile.enterPassphrase;
     return;
   }
 
@@ -202,7 +209,7 @@ async function onTest(trustedFingerprint?: string) {
         : isBackendError(err) && err.kind === 'HostKeyMismatch'
           ? {
               status: 'failed',
-              message: `La clé du serveur a changé (${err.fingerprint}). Connexion refusée — possible attaque de l'homme du milieu.`,
+              message: t.profile.hostKeyChanged(err.fingerprint ?? ''),
             }
           : { status: 'failed', message: errorMessage(err) };
   }
@@ -213,185 +220,163 @@ watch([host, port, protocol, username, authType, keyPath, secret, remoteDirector
   testRun++;
   test.value = null;
 });
-
-function onOverlayClick(e: MouseEvent) {
-  if ((e.target as HTMLElement).classList.contains('dialog-overlay')) {
-    emit('cancel');
-  }
-}
 </script>
 
 <template>
-  <div class="dialog-overlay" @click="onOverlayClick">
-    <div class="dialog-panel">
-      <div class="dialog-header">
-        <span class="dialog-title">
-          {{ isEditing ? 'Modifier le profil' : 'Nouveau profil' }}
+  <BaseDialog :title="isEditing ? t.profile.editTitle : t.profile.newTitle" :width="420" @cancel="emit('cancel')">
+    <form class="profile-form" @submit.prevent="onSave">
+      <div class="form-group">
+        <label class="form-label" :for="fieldId('name')">{{ t.profile.name }}</label>
+        <input :id="fieldId('name')" v-model="name" type="text" class="form-input" :placeholder="t.profile.namePlaceholder" />
+      </div>
+
+      <div class="form-row">
+        <div class="form-group form-group-grow">
+          <label class="form-label" :for="fieldId('host')">{{ t.profile.host }}</label>
+          <input :id="fieldId('host')" v-model="host" type="text" class="form-input" placeholder="example.com" spellcheck="false" />
+        </div>
+        <div class="form-group form-group-small">
+          <label class="form-label" :for="fieldId('port')">{{ t.profile.port }}</label>
+          <input
+            :id="fieldId('port')"
+            v-model.number="port"
+            type="number"
+            class="form-input"
+            min="1"
+            max="65535"
+            @input="onPortInput"
+          />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" :for="fieldId('protocol')">{{ t.profile.protocol }}</label>
+        <select :id="fieldId('protocol')" v-model="protocol" class="form-input" :aria-describedby="protocol === 'Scp' ? fieldId('scp') : undefined">
+          <option v-for="p in allProtocols" :key="p" :value="p" :disabled="!availableProtocols.includes(p)">
+            {{ p }}{{ availableProtocols.includes(p) ? '' : t.profile.soon }}
+          </option>
+        </select>
+        <span v-if="protocol === 'Scp'" :id="fieldId('scp')" class="form-hint">{{ t.profile.scpHint }}</span>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" :for="fieldId('user')">{{ t.profile.username }}</label>
+        <input :id="fieldId('user')" v-model="username" type="text" class="form-input" placeholder="user" spellcheck="false" />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" :for="fieldId('auth')">{{ t.profile.auth }}</label>
+        <select :id="fieldId('auth')" v-model="authType" class="form-input">
+          <option v-for="a in allAuthTypes" :key="a.value" :value="a.value">{{ a.label }}</option>
+        </select>
+      </div>
+
+      <div v-if="showKeyPath" class="form-group">
+        <label class="form-label" :for="fieldId('key')">{{ t.profile.keyPath }}</label>
+        <input :id="fieldId('key')" v-model="keyPath" type="text" class="form-input" placeholder="~/.ssh/id_rsa" spellcheck="false" />
+      </div>
+
+      <div v-if="needsSecret" class="form-group">
+        <label class="checkbox-label">
+          <input v-model="savePassword" type="checkbox" />
+          {{ isPassword ? t.profile.savePassword : t.profile.savePassphrase }}
+        </label>
+      </div>
+
+      <div v-if="needsSecret" class="form-group">
+        <label class="form-label" :for="fieldId('secret')">{{ secretLabel }}</label>
+        <input
+          :id="fieldId('secret')"
+          v-model="secret"
+          type="password"
+          class="form-input"
+          autocomplete="new-password"
+          :aria-describedby="fieldId('secret-hint')"
+          :placeholder="savePassword && canKeepSaved ? t.profile.savedPlaceholder : ''"
+        />
+        <span :id="fieldId('secret-hint')" class="form-hint">
+          {{ savePassword ? t.profile.keptInKeychain : t.profile.testOnly }}
         </span>
       </div>
 
-      <div class="dialog-body">
-        <div class="form-group">
-          <label class="form-label">Nom du profil *</label>
-          <input v-model="name" type="text" class="form-input" placeholder="Mon serveur" />
-        </div>
-
-        <div class="form-row">
-          <div class="form-group form-group-grow">
-            <label class="form-label">Hôte *</label>
-            <input v-model="host" type="text" class="form-input" placeholder="example.com" />
-          </div>
-          <div class="form-group form-group-small">
-            <label class="form-label">Port</label>
-            <input v-model.number="port" type="number" class="form-input" min="1" max="65535" @input="onPortInput" />
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Protocole</label>
-          <select v-model="protocol" class="form-input">
-            <option v-for="p in allProtocols" :key="p" :value="p" :disabled="!availableProtocols.includes(p)">
-              {{ p }}{{ availableProtocols.includes(p) ? '' : ' (bientôt)' }}
-            </option>
-          </select>
-          <span v-if="protocol === 'Scp'" class="form-hint">
-            SCP utilise des commandes shell sur le serveur pour lister, renommer et supprimer. Préférez SFTP s'il est disponible.
-          </span>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Nom d'utilisateur *</label>
-          <input v-model="username" type="text" class="form-input" placeholder="user" />
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Authentification</label>
-          <select v-model="authType" class="form-input">
-            <option v-for="a in allAuthTypes" :key="a.value" :value="a.value">{{ a.label }}</option>
-          </select>
-        </div>
-
-        <div v-if="showKeyPath" class="form-group">
-          <label class="form-label">Chemin de la clé</label>
-          <input v-model="keyPath" type="text" class="form-input" placeholder="~/.ssh/id_rsa" />
-        </div>
-
-        <div v-if="needsSecret" class="form-group">
-          <label class="checkbox-label">
-            <input v-model="savePassword" type="checkbox" />
-            Enregistrer le {{ secretLabel.toLowerCase() }}
-          </label>
-        </div>
-
-        <div v-if="needsSecret" class="form-group">
-          <label class="form-label">{{ secretLabel }}</label>
-          <input
-            v-model="secret"
-            type="password"
-            class="form-input"
-            autocomplete="new-password"
-            :placeholder="savePassword && canKeepSaved ? 'Enregistré — laisser vide pour le conserver' : ''"
-          />
-          <span v-if="savePassword" class="form-hint">Conservé dans le trousseau du système, jamais dans le fichier des profils.</span>
-          <span v-else class="form-hint">Sert seulement au test : il sera demandé à chaque connexion.</span>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Répertoire distant initial</label>
-          <input v-model="remoteDirectory" type="text" class="form-input" placeholder="/var/www" />
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Groupe</label>
-          <input v-model="group" type="text" class="form-input" list="profile-groups" placeholder="Aucun" spellcheck="false" />
-          <datalist id="profile-groups">
-            <option v-for="g in groups ?? []" :key="g" :value="g" />
-          </datalist>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Description</label>
-          <input v-model="description" type="text" class="form-input" placeholder="Description optionnelle" />
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Tags (séparés par des virgules)</label>
-          <input v-model="tagsText" type="text" class="form-input" placeholder="prod, web, backup" />
-        </div>
-
-        <div v-if="validationError" class="form-error">{{ validationError }}</div>
-
+      <div class="form-group">
+        <label class="form-label" :for="fieldId('dir')">{{ t.profile.remoteDirectory }}</label>
+        <input :id="fieldId('dir')" v-model="remoteDirectory" type="text" class="form-input" placeholder="/var/www" spellcheck="false" />
       </div>
 
-      <div v-if="test" class="test-result" :class="test.status" role="status">
-        <template v-if="test.status === 'running'">Test de la connexion…</template>
+      <div class="form-group">
+        <label class="form-label" :for="fieldId('group')">{{ t.profile.group }}</label>
+        <input
+          :id="fieldId('group')"
+          v-model="group"
+          type="text"
+          class="form-input"
+          :list="fieldId('groups')"
+          :placeholder="t.profile.groupPlaceholder"
+          spellcheck="false"
+        />
+        <datalist :id="fieldId('groups')">
+          <option v-for="g in groups ?? []" :key="g" :value="g" />
+        </datalist>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" :for="fieldId('description')">{{ t.profile.description }}</label>
+        <input
+          :id="fieldId('description')"
+          v-model="description"
+          type="text"
+          class="form-input"
+          :placeholder="t.profile.descriptionPlaceholder"
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" :for="fieldId('tags')">{{ t.profile.tags }}</label>
+        <input :id="fieldId('tags')" v-model="tagsText" type="text" class="form-input" placeholder="prod, web, backup" />
+      </div>
+
+      <div v-if="validationError" class="form-error" role="alert">{{ validationError }}</div>
+      <!-- Enter in a field saves, as the Enregistrer button does. -->
+      <button type="submit" hidden />
+    </form>
+
+    <template v-if="test" #status>
+      <div class="test-result" :class="test.status" role="status">
+        <template v-if="test.status === 'running'">{{ t.profile.testing }}</template>
         <template v-else-if="test.status === 'ok' && !test.result.directory_error">
-          Connexion réussie. Dossier de départ : <span class="mono">{{ test.result.initial_path }}</span>
+          {{ t.profile.testOk }} <span class="mono">{{ test.result.initial_path }}</span>
         </template>
         <template v-else-if="test.status === 'ok'">
-          Connexion réussie, mais le répertoire distant initial n'est pas accessible :
-          {{ test.result.directory_error }}
+          {{ t.profile.testDirFailed }}
+          {{ test.result.directory_error ? errorMessage(test.result.directory_error) : '' }}
         </template>
         <template v-else-if="test.status === 'unknown-key'">
-          Serveur inconnu. Vérifiez son empreinte avant de lui faire confiance :
+          {{ t.profile.testUnknownKey }}
           <div class="mono">{{ test.fingerprint }}</div>
-          <button class="btn btn-cancel btn-trust" @click="onTest(test.fingerprint)">Faire confiance et tester</button>
+          <button class="btn btn-trust" @click="onTest(test.fingerprint)">{{ t.profile.trustAndTest }}</button>
         </template>
         <template v-else>{{ test.message }}</template>
       </div>
+    </template>
 
-      <div class="dialog-footer">
-        <button
-          class="btn btn-cancel btn-test"
-          :disabled="test?.status === 'running' || !canTest"
-          :title="canTest ? 'Se connecter avec ces réglages, sans enregistrer' : `Saisissez le ${secretLabel.toLowerCase()} pour tester`"
-          @click="onTest()"
-        >
-          Tester
-        </button>
-        <button class="btn btn-cancel" @click="emit('cancel')">Annuler</button>
-        <button class="btn btn-save" @click="onSave">Enregistrer</button>
-      </div>
-    </div>
-  </div>
+    <template #footer>
+      <button
+        class="btn btn-test"
+        :disabled="test?.status === 'running' || !canTest"
+        :title="canTest ? t.profile.testHint : isPassword ? t.profile.testNeedsPassword : t.profile.testNeedsPassphrase"
+        @click="onTest()"
+      >
+        {{ t.profile.test }}
+      </button>
+      <button class="btn" @click="emit('cancel')">{{ t.common.cancel }}</button>
+      <button class="btn btn-primary" @click="onSave">{{ t.common.save }}</button>
+    </template>
+  </BaseDialog>
 </template>
 
 <style scoped>
-.dialog-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--color-overlay);
-}
-
-.dialog-panel {
-  width: 420px;
-  max-height: 80vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  box-shadow: 0 8px 32px var(--shadow-color);
-}
-
-.dialog-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.dialog-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text);
-}
-
-.dialog-body {
-  padding: 16px;
-  overflow-y: auto;
+.profile-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -417,29 +402,6 @@ function onOverlayClick(e: MouseEvent) {
   flex-shrink: 0;
 }
 
-.form-label {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.form-input {
-  padding: 6px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 3px;
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-}
-
-.form-input:focus {
-  border-color: var(--color-accent);
-}
-
 .form-input option {
   background: var(--color-bg);
   color: var(--color-text);
@@ -449,8 +411,6 @@ function onOverlayClick(e: MouseEvent) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  color: var(--color-text);
   cursor: pointer;
 }
 
@@ -460,46 +420,8 @@ function onOverlayClick(e: MouseEvent) {
 }
 
 .form-error {
-  font-size: 12px;
   color: var(--color-danger);
   padding: 4px 0;
-}
-
-.dialog-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--color-border);
-}
-
-.btn {
-  padding: 6px 16px;
-  border: 1px solid var(--color-border);
-  border-radius: 3px;
-  font-size: 12px;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.btn-cancel {
-  background: none;
-  color: var(--color-text-muted);
-}
-
-.btn-cancel:hover {
-  background: var(--color-hover);
-  color: var(--color-text);
-}
-
-.btn-save {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: var(--color-on-accent);
-}
-
-.btn-save:hover {
-  background: var(--color-accent-hover);
 }
 
 .btn:disabled {
@@ -512,11 +434,8 @@ function onOverlayClick(e: MouseEvent) {
 }
 
 .test-result {
-  margin: 0 16px 12px;
   padding: 8px;
   border-radius: 3px;
-  font-size: 12px;
-  color: var(--color-text);
   background: var(--bg-neutral);
   overflow-wrap: anywhere;
 }

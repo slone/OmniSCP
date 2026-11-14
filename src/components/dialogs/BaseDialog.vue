@@ -1,7 +1,47 @@
 <script setup lang="ts">
+import { nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue';
+
 withDefaults(defineProps<{ title: string; width?: number }>(), { width: 380 });
 
 const emit = defineEmits<{ cancel: [] }>();
+
+const titleId = useId();
+const panel = ref<HTMLElement | null>(null);
+/// Gets the focus back when the dialog closes.
+const opener = document.activeElement as HTMLElement | null;
+
+const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+function focusable(): HTMLElement[] {
+  return [...(panel.value?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter(
+    (el) => !el.hasAttribute('disabled') && el.offsetParent !== null,
+  );
+}
+
+onMounted(async () => {
+  // Dialogs focus their own safe or main control; otherwise the first one.
+  await nextTick();
+  if (!panel.value?.contains(document.activeElement)) focusable()[0]?.focus();
+});
+
+onBeforeUnmount(() => {
+  if (opener?.isConnected) opener.focus();
+});
+
+/// Keeps Tab inside the dialog while it is open.
+function onTab(e: KeyboardEvent) {
+  const items = focusable();
+  if (items.length === 0) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 
 function onOverlayClick(e: MouseEvent) {
   if ((e.target as HTMLElement).classList.contains('dialog-overlay')) {
@@ -11,13 +51,23 @@ function onOverlayClick(e: MouseEvent) {
 </script>
 
 <template>
-  <div class="dialog-overlay" @click="onOverlayClick" @keydown.esc="emit('cancel')">
-    <div class="dialog-panel" :style="{ width: width + 'px' }">
+  <div class="dialog-overlay" @click="onOverlayClick" @keydown.esc="emit('cancel')" @keydown.tab="onTab">
+    <div
+      ref="panel"
+      class="dialog-panel"
+      role="dialog"
+      aria-modal="true"
+      :aria-labelledby="titleId"
+      :style="{ width: width + 'px' }"
+    >
       <div class="dialog-header">
-        <span class="dialog-title">{{ title }}</span>
+        <h2 :id="titleId" class="dialog-title">{{ title }}</h2>
       </div>
       <div class="dialog-body">
         <slot />
+      </div>
+      <div v-if="$slots.status" class="dialog-status">
+        <slot name="status" />
       </div>
       <div class="dialog-footer">
         <slot name="footer" />
@@ -39,6 +89,7 @@ function onOverlayClick(e: MouseEvent) {
 
 .dialog-panel {
   max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
   display: flex;
   flex-direction: column;
   background: var(--color-surface);
@@ -53,16 +104,24 @@ function onOverlayClick(e: MouseEvent) {
 }
 
 .dialog-title {
+  margin: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--color-text);
 }
 
 .dialog-body {
+  overflow-y: auto;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  font-size: 12px;
+  color: var(--color-text);
+}
+
+.dialog-status {
+  padding: 0 16px 12px;
   font-size: 12px;
   color: var(--color-text);
 }
@@ -124,6 +183,12 @@ function onOverlayClick(e: MouseEvent) {
 
 :slotted(.form-input:focus) {
   border-color: var(--color-accent);
+}
+
+:slotted(.btn:focus-visible),
+:slotted(.form-input:focus-visible) {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
 :slotted(.form-label) {

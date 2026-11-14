@@ -5,6 +5,7 @@ import ConfirmDeleteDialog from './ConfirmDeleteDialog.vue';
 import ConflictDialog from './ConflictDialog.vue';
 import PropertiesDialog from './PropertiesDialog.vue';
 import ConfirmMoveDialog from './ConfirmMoveDialog.vue';
+import { t } from '../../i18n';
 
 const actions = useFileActionsStore();
 
@@ -20,18 +21,18 @@ function onMove() {
   <template v-if="actions.dialog">
     <InputDialog
       v-if="actions.dialog.type === 'mkdir'"
-      :title="actions.dialog.side === 'local' ? 'Nouveau dossier local' : 'Nouveau dossier distant'"
-      label="Nom du dossier"
-      confirm-label="Créer"
+      :title="actions.dialog.side === 'local' ? t.dialogs.mkdirLocal : t.dialogs.mkdirRemote"
+      :label="t.dialogs.folderName"
+      :confirm-label="t.dialogs.create"
       @submit="(name) => actions.dialog?.type === 'mkdir' && actions.mkdir(actions.dialog.side, name)"
       @cancel="actions.closeDialog"
     />
     <InputDialog
       v-else-if="actions.dialog.type === 'rename'"
-      title="Renommer"
-      label="Nouveau nom"
+      :title="t.dialogs.rename"
+      :label="t.dialogs.newName"
       :initial-value="actions.dialog.entry.name"
-      confirm-label="Renommer"
+      :confirm-label="t.dialogs.rename"
       @submit="(name) => actions.dialog?.type === 'rename' && actions.rename(actions.dialog.side, actions.dialog.entry, name)"
       @cancel="actions.closeDialog"
     />

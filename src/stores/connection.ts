@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { FileEntry, Profile } from '../types';
 import { useLogStore } from './logs';
 import { useNavHistory, type NavKind } from '../utils/history';
+import { t } from '../i18n';
 import { errorMessage, isBackendError } from '../utils/errors';
 import { useTransfersStore } from './transfers';
 import { useEditsStore } from './edits';
@@ -34,19 +35,19 @@ export const useConnectionStore = defineStore('connection', () => {
       connected.value = true;
       profileId.value = profile.id;
       profileName.value = profile.name;
-      logStore.addLog('Info', 'Connexion', 'OK', `Connecté à ${profile.name}`);
+      logStore.addLog('Info', t.connection.log, t.log.ok, t.log.connectedTo(profile.name));
       await navigateTo(initialPath);
     } catch (err) {
       if (isBackendError(err) && err.kind === 'HostKeyUnknown') {
         // Not a failure yet: the caller asks the user to confirm the fingerprint.
-        logStore.addLog('Warning', 'Connexion', 'Clé inconnue', `${profile.name} — ${err.fingerprint}`);
+        logStore.addLog('Warning', t.connection.log, t.log.unknownKey, `${profile.name} — ${err.fingerprint}`);
         throw err;
       }
       const message =
         isBackendError(err) && err.kind === 'HostKeyMismatch'
-          ? `ATTENTION : la clé d'hôte a changé (${err.fingerprint}). Connexion refusée — possible attaque de l'homme du milieu.`
+          ? t.log.hostKeyChanged(err.fingerprint ?? '')
           : errorMessage(err);
-      logStore.addLog('Error', 'Connexion', 'Échec', `${profile.name} — ${message}`);
+      logStore.addLog('Error', t.connection.log, t.log.failed, `${profile.name} — ${message}`);
       error.value = message;
       throw err;
     } finally {
@@ -58,10 +59,10 @@ export const useConnectionStore = defineStore('connection', () => {
     const logStore = useLogStore();
     try {
       await invoke('disconnect');
-      logStore.addLog('Info', 'Déconnexion', 'OK', `Déconnecté de ${profileName.value}`);
+      logStore.addLog('Info', t.log.disconnect, t.log.ok, t.log.disconnectedFrom(profileName.value ?? ''));
     } catch (err) {
       const message = errorMessage(err);
-      logStore.addLog('Error', 'Déconnexion', 'Échec', message);
+      logStore.addLog('Error', t.log.disconnect, t.log.failed, message);
     } finally {
       useTransfersStore().cancelAllLocally();
       useEditsStore().reset();
@@ -82,7 +83,7 @@ export const useConnectionStore = defineStore('connection', () => {
   async function handleConnectionLost(err: unknown) {
     if (!isBackendError(err) || err.kind !== 'ConnectionLost' || !connected.value) return;
     await disconnect();
-    error.value = 'La connexion au serveur a été perdue. Reconnectez-vous pour continuer.';
+    error.value = t.log.connectionLost;
   }
 
   async function navigateTo(path: string, kind: NavKind = 'new') {
@@ -102,10 +103,10 @@ export const useConnectionStore = defineStore('connection', () => {
       files.value = result;
       history.moved(currentPath.value, path, kind);
       currentPath.value = path;
-      logStore.addLog('Info', 'Navigation distante', 'OK', `${path} — ${result.length} élément(s)`);
+      logStore.addLog('Info', t.log.remoteNav, t.log.ok, t.log.listed(path, result.length));
     } catch (err) {
       const message = errorMessage(err);
-      logStore.addLog('Error', 'Navigation distante', 'Échec', `${path} — ${message}`);
+      logStore.addLog('Error', t.log.remoteNav, t.log.failed, `${path} — ${message}`);
       error.value = message;
       await handleConnectionLost(err);
     } finally {

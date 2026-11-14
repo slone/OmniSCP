@@ -2,6 +2,8 @@
 import { ref, onMounted } from 'vue';
 import BaseDialog from './BaseDialog.vue';
 import type { FileEntry, PaneSide } from '../../types';
+import { t } from '../../i18n';
+import EntryIcon from './EntryIcon.vue';
 
 defineProps<{ entries: FileEntry[]; side: PaneSide; destDir: string }>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
@@ -13,24 +15,21 @@ onMounted(() => confirmRef.value?.focus());
 </script>
 
 <template>
-  <BaseDialog :title="side === 'local' ? 'Déplacer vers le serveur' : 'Déplacer vers l’ordinateur'" :width="440" @cancel="emit('cancel')">
+  <BaseDialog :title="side === 'local' ? t.dialogs.moveToServer : t.dialogs.moveToComputer" :width="440" @cancel="emit('cancel')">
     <p>
-      Déplacer {{ entries.length === 1 ? 'cet élément' : `ces ${entries.length} éléments` }} vers
+      {{ t.dialogs.moveText(entries.length) }}
       <span class="mono">{{ destDir }}</span> ?
     </p>
     <ul class="entry-list">
       <li v-for="entry in entries.slice(0, MAX_LISTED)" :key="entry.path">
-        {{ entry.is_symlink ? '🔗' : entry.is_dir ? '📁' : '📄' }} {{ entry.name }}
+        <EntryIcon :entry="entry" /> {{ entry.name }}
       </li>
-      <li v-if="entries.length > MAX_LISTED" class="muted">… et {{ entries.length - MAX_LISTED }} autre(s)</li>
+      <li v-if="entries.length > MAX_LISTED" class="muted">{{ t.common.more(entries.length - MAX_LISTED) }}</li>
     </ul>
-    <p class="muted">
-      Les originaux sont supprimés {{ side === 'local' ? 'de cet ordinateur' : 'du serveur' }} une fois copiés.
-      Si un seul fichier d’un dossier n’a pas pu être copié, rien n’est supprimé.
-    </p>
+    <p class="muted">{{ side === 'local' ? t.dialogs.moveNoteLocal : t.dialogs.moveNoteRemote }}</p>
     <template #footer>
-      <button class="btn" @click="emit('cancel')">Annuler</button>
-      <button ref="confirmRef" class="btn btn-primary" @click="emit('confirm')">Déplacer</button>
+      <button class="btn" @click="emit('cancel')">{{ t.common.cancel }}</button>
+      <button ref="confirmRef" class="btn btn-primary" @click="emit('confirm')">{{ t.dialogs.move }}</button>
     </template>
   </BaseDialog>
 </template>

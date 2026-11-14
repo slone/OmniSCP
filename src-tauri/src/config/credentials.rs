@@ -3,7 +3,7 @@
 
 use keyring::Entry;
 
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 
 const SERVICE: &str = "com.guillaumechantraine.omniscp";
 
@@ -13,7 +13,7 @@ fn entry(profile_id: &str) -> Result<Entry> {
 
 fn store_err(err: keyring::Error) -> OmniError {
     // keyring errors never include the secret itself.
-    OmniError::Config(format!("Credential store error: {err}"))
+    OmniError::Config(Msg::new("credentials.failed").detail(err))
 }
 
 pub fn get(profile_id: &str) -> Result<Option<String>> {

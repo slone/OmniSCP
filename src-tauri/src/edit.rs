@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 use crate::protocols::{FileEntry, Protocol, remote_file_name};
 
 pub const CHANGED_EVENT: &str = "remote-edit-changed";
@@ -86,13 +86,12 @@ impl Edits {
         }
         let entry = conn.stat(remote_path)?;
         if entry.is_dir {
-            return Err(OmniError::Transfer(format!("{remote_path} is a folder")));
+            return Err(OmniError::Transfer(Msg::new("edit.isFolder").with("path", remote_path)));
         }
         if entry.size > MAX_EDIT_SIZE {
-            return Err(OmniError::Transfer(format!(
-                "{remote_path} is too large to edit ({} MB at most); download it instead",
-                MAX_EDIT_SIZE / (1024 * 1024)
-            )));
+            return Err(OmniError::Transfer(
+                Msg::new("edit.tooLarge").with("path", remote_path).with("max", MAX_EDIT_SIZE / (1024 * 1024)),
+            ));
         }
         let dir = root.join(&id);
         std::fs::create_dir_all(&dir).map_err(|e| OmniError::io_context(dir.display(), e))?;
@@ -137,20 +136,18 @@ impl Edits {
             let files = self.files();
             let edit = files
                 .get(id)
-                .ok_or_else(|| OmniError::Transfer("This file is no longer being edited".into()))?;
+                .ok_or_else(|| OmniError::Transfer(Msg::new("edit.notEditing")))?;
             (edit.remote_path.clone(), edit.local_path.clone(), edit.remote)
         };
         if !force {
             match conn.stat(&remote_path) {
                 Ok(entry) if RemoteState::from(&entry) == expected => {}
                 Ok(_) => {
-                    return Err(OmniError::Conflict(format!(
-                        "{remote_path} was changed on the server since it was opened"
-                    )));
+                    return Err(OmniError::Conflict(Msg::new("edit.changedOnServer").with("path", &remote_path)));
                 }
                 Err(OmniError::ConnectionLost) => return Err(OmniError::ConnectionLost),
                 Err(_) if !conn.exists(&remote_path) => {
-                    return Err(OmniError::Conflict(format!("{remote_path} no longer exists on the server")));
+                    return Err(OmniError::Conflict(Msg::new("edit.goneFromServer").with("path", &remote_path)));
                 }
                 Err(e) => return Err(e),
             }

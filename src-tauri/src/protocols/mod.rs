@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::config::Profile;
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 
 /// Everything needed to open a connection; cloned to open extra sessions (transfers).
 #[derive(Clone)]
@@ -26,7 +26,7 @@ pub fn for_profile(params: &ConnectParams) -> Result<Box<dyn Protocol>> {
     match params.profile.protocol {
         ProtocolType::Sftp => Ok(Box::new(sftp::SftpConnection::new(params))),
         ProtocolType::Scp => Ok(Box::new(scp::ScpConnection::new(params))),
-        other => Err(OmniError::Protocol(format!("Protocol {other:?} is not supported yet"))),
+        other => Err(OmniError::Protocol(Msg::new("protocol.unsupported").with("protocol", format!("{other:?}")))),
     }
 }
 
@@ -36,7 +36,7 @@ pub struct ProbeResult {
     /// Where browsing would start.
     pub initial_path: String,
     /// The profile's starting folder could not be listed; the login itself worked.
-    pub directory_error: Option<String>,
+    pub directory_error: Option<OmniError>,
 }
 
 /// Connects with `params`, checks the starting folder and disconnects.
@@ -46,7 +46,7 @@ pub fn probe(params: &ConnectParams) -> Result<ProbeResult> {
     let result = match params.profile.remote_directory.as_deref().filter(|d| !d.is_empty()) {
         Some(dir) => ProbeResult {
             initial_path: dir.to_string(),
-            directory_error: conn.list_dir(dir).err().map(|e| e.to_string()),
+            directory_error: conn.list_dir(dir).err(),
         },
         None => ProbeResult {
             initial_path: conn.realpath(".").unwrap_or_else(|_| "/".to_string()),
@@ -289,8 +289,8 @@ pub fn write_local_atomically(
 ) -> Result<()> {
     let temp = local.with_file_name(temp_file_name());
     let mut file = std::fs::File::create(&temp)
-        .map_err(|e| OmniError::io_context(format!("Failed to create {}", temp.display()), e))?;
-    let write_err = |e| OmniError::io_context(format!("Failed to write {}", local.display()), e);
+        .map_err(|e| OmniError::io_context(temp.display(), e))?;
+    let write_err = |e| OmniError::io_context(local.display(), e);
 
     let result = copy(&mut file).and_then(|()| {
         // Not worth losing the download over.
@@ -319,7 +319,7 @@ pub fn write_local_atomically(
 pub fn validate_file_name(name: &str) -> Result<()> {
     let name = name.trim();
     if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
-        return Err(OmniError::Config(format!("Invalid file name: \"{name}\"")));
+        return Err(OmniError::Config(Msg::new("name.invalid").with("name", name)));
     }
     Ok(())
 }
@@ -369,6 +369,12 @@ pub trait Protocol: Send + Sync {
     fn account_names(&self) -> AccountNames {
         AccountNames::default()
     }
+}
+
+/// What is missing is the path (or the source of a rename) the operation was about.
+pub(crate) fn not_found(context: &Msg) -> Msg {
+    let path = context.param("path").or(context.param("from")).unwrap_or_default();
+    Msg::new("remote.notFound").with("path", path)
 }
 
 #[cfg(test)]

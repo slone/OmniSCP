@@ -8,7 +8,7 @@ use std::time::Duration;
 use ssh2::{CheckResult, HashType, KnownHostFileKind, Session};
 
 use crate::config::AuthMethod;
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 use crate::protocols::ConnectParams;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -22,12 +22,12 @@ pub fn open_session(params: &ConnectParams) -> Result<Session> {
     let tcp = open_tcp(params)?;
 
     let mut session = Session::new()
-        .map_err(|e| OmniError::Protocol(format!("Failed to create SSH session: {e}")))?;
+        .map_err(|e| OmniError::Protocol(Msg::new("ssh.session").detail(e)))?;
     session.set_tcp_stream(tcp);
     session.set_timeout(SESSION_TIMEOUT_MS);
     session
         .handshake()
-        .map_err(|e| OmniError::Protocol(format!("SSH handshake failed: {e}")))?;
+        .map_err(|e| OmniError::Protocol(Msg::new("ssh.handshake").detail(e)))?;
 
     verify_host_key(&session, params)?;
     authenticate(&session, params)?;
@@ -41,7 +41,7 @@ fn open_tcp(params: &ConnectParams) -> Result<TcpStream> {
     let addr = format!("{}:{}", params.profile.host, params.profile.port);
     let candidates = addr
         .to_socket_addrs()
-        .map_err(|e| OmniError::Network(format!("Failed to resolve {addr}: {e}")))?;
+        .map_err(|e| OmniError::Network(Msg::new("net.resolve").with("address", &addr).detail(e)))?;
 
     let mut last_err = None;
     for candidate in candidates {
@@ -51,8 +51,8 @@ fn open_tcp(params: &ConnectParams) -> Result<TcpStream> {
         }
     }
     Err(OmniError::Network(match last_err {
-        Some(e) => format!("Failed to connect to {addr}: {e}"),
-        None => format!("No address found for {addr}"),
+        Some(e) => Msg::new("net.connect").with("address", addr).detail(e),
+        None => Msg::new("net.noAddress").with("address", addr),
     }))
 }
 
@@ -63,13 +63,13 @@ fn verify_host_key(session: &Session, params: &ConnectParams) -> Result<()> {
     let port = params.profile.port;
     let (key, key_type) = session
         .host_key()
-        .ok_or_else(|| OmniError::Protocol("Server did not provide a host key".into()))?;
+        .ok_or_else(|| OmniError::Protocol(Msg::new("ssh.noHostKey")))?;
     let fingerprint = session
         .host_key_hash(HashType::Sha256)
         .map(|hash| format!("SHA256:{}", base64_no_pad(hash)))
-        .ok_or_else(|| OmniError::Protocol("Failed to hash host key".into()))?;
+        .ok_or_else(|| OmniError::Protocol(Msg::new("ssh.hostKeyHash")))?;
 
-    let known_hosts_err = |e: ssh2::Error| OmniError::Protocol(format!("known_hosts error: {e}"));
+    let known_hosts_err = |e: ssh2::Error| OmniError::Protocol(Msg::new("ssh.knownHosts").detail(e));
 
     let mut found = false;
     for file in [home_dir().map(|h| h.join(".ssh/known_hosts")), Some(params.known_hosts_path.clone())]
@@ -85,10 +85,9 @@ fn verify_host_key(session: &Session, params: &ConnectParams) -> Result<()> {
             CheckResult::Mismatch => return Err(OmniError::HostKeyMismatch(fingerprint)),
             CheckResult::NotFound => {}
             CheckResult::Failure => {
-                return Err(OmniError::Protocol(format!(
-                    "Failed to check host key against {}",
-                    file.display()
-                )));
+                return Err(OmniError::Protocol(
+                    Msg::new("ssh.knownHostsCheck").with("path", file.display()),
+                ));
             }
         }
     }
@@ -126,15 +125,15 @@ fn authenticate(session: &Session, params: &ConnectParams) -> Result<()> {
             let password = params
                 .password
                 .as_deref()
-                .ok_or_else(|| OmniError::Auth("Password required but not provided".into()))?;
+                .ok_or_else(|| OmniError::Auth(Msg::new("auth.passwordMissing")))?;
             session.userauth_password(username, password).map_err(|e| {
-                OmniError::Auth(format!("Password authentication failed for user \"{username}\": {e}"))
+                OmniError::Auth(Msg::new("auth.password").with("user", username).detail(e))
             })?;
         }
         AuthMethod::KeyFile { path } => {
             let key = key_file_path(path)?;
             session.userauth_pubkey_file(username, None, &key, None).map_err(|e| {
-                OmniError::Auth(format!("Key file authentication failed for user \"{username}\": {e}"))
+                OmniError::Auth(Msg::new("auth.key").with("user", username).detail(e))
             })?;
         }
         AuthMethod::KeyWithPassphrase { path } => {
@@ -142,16 +141,14 @@ fn authenticate(session: &Session, params: &ConnectParams) -> Result<()> {
             let passphrase = params
                 .password
                 .as_deref()
-                .ok_or_else(|| OmniError::Auth("Passphrase required but not provided".into()))?;
+                .ok_or_else(|| OmniError::Auth(Msg::new("auth.passphraseMissing")))?;
             session.userauth_pubkey_file(username, None, &key, Some(passphrase)).map_err(|e| {
-                OmniError::Auth(format!(
-                    "Key file authentication with passphrase failed for user \"{username}\": {e}"
-                ))
+                OmniError::Auth(Msg::new("auth.keyPassphrase").with("user", username).detail(e))
             })?;
         }
         AuthMethod::Agent => {
             session.userauth_agent(username).map_err(|e| {
-                OmniError::Auth(format!("SSH agent authentication failed for user \"{username}\": {e}"))
+                OmniError::Auth(Msg::new("auth.agent").with("user", username).detail(e))
             })?;
         }
     }
@@ -159,7 +156,7 @@ fn authenticate(session: &Session, params: &ConnectParams) -> Result<()> {
     if session.authenticated() {
         Ok(())
     } else {
-        Err(OmniError::Auth("Authentication failed".into()))
+        Err(OmniError::Auth(Msg::new("auth.failed")))
     }
 }
 
@@ -184,14 +181,11 @@ fn expand_tilde(path: &str) -> PathBuf {
 
 fn key_file_path(path: &str) -> Result<PathBuf> {
     if path.trim().is_empty() {
-        return Err(OmniError::Config("No SSH key file configured for this profile".into()));
+        return Err(OmniError::Config(Msg::new("key.notConfigured")));
     }
     let expanded = expand_tilde(path.trim());
     if !expanded.is_file() {
-        return Err(OmniError::Config(format!(
-            "SSH key file not found: {}",
-            expanded.display()
-        )));
+        return Err(OmniError::Config(Msg::new("key.notFound").with("path", expanded.display())));
     }
     Ok(expanded)
 }

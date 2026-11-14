@@ -12,6 +12,7 @@ import { useLocalFilesStore } from '../stores/localFiles';
 import { isBackendError } from '../utils/errors';
 import { useFileActionsStore } from '../stores/fileActions';
 import type { Profile } from '../types';
+import { t } from '../i18n';
 
 const profileStore = useProfilesStore();
 const connectionStore = useConnectionStore();
@@ -23,7 +24,7 @@ const showSync = ref(false);
 const showSettings = ref(false);
 
 const showPasswordDialog = ref(false);
-const passwordPromptLabel = ref('Mot de passe');
+const passwordPromptLabel = ref('');
 const passwordNotice = ref<string | undefined>();
 
 interface Attempt {
@@ -43,7 +44,7 @@ function needsSecret(profile: Profile) {
 }
 
 function promptPassword(profile: Profile, notice?: string) {
-  passwordPromptLabel.value = profile.auth_method.type === 'Password' ? 'Mot de passe' : 'Passphrase';
+  passwordPromptLabel.value = profile.auth_method.type === 'Password' ? t.auth.password : t.auth.passphrase;
   passwordNotice.value = notice;
   showPasswordDialog.value = true;
 }
@@ -55,7 +56,7 @@ async function attempt(a: Attempt, trustedFingerprint?: string) {
     if (isBackendError(err) && err.kind === 'HostKeyUnknown' && err.fingerprint) {
       hostKeyPrompt.value = { ...a, fingerprint: err.fingerprint };
     } else if (isBackendError(err) && err.kind === 'Auth' && a.password === undefined && needsSecret(a.profile)) {
-      promptPassword(a.profile, 'Le mot de passe enregistré a été refusé. Saisissez-le à nouveau.');
+      promptPassword(a.profile, t.connection.savedPasswordRefused);
     }
     // Other errors are already logged by the store.
     return;
@@ -75,7 +76,7 @@ function onHostKeyAccept() {
 
 function onHostKeyCancel() {
   hostKeyPrompt.value = null;
-  logStore.addLog('Info', 'Connexion', 'Annulée', 'Empreinte du serveur refusée');
+  logStore.addLog('Info', t.connection.log, t.connection.cancelled, t.connection.hostKeyRefused);
 }
 
 async function onConnect() {
@@ -94,7 +95,7 @@ async function onConnect() {
     attempt({ profile, remember: false });
   } else {
     if (profile.save_password) {
-      logStore.addLog('Warning', 'Trousseau', 'Absent', `Aucun mot de passe enregistré trouvé pour « ${profile.name} »`);
+      logStore.addLog('Warning', t.connection.keychainLog, t.connection.keychainMissing, t.connection.noSavedPassword(profile.name));
     }
     promptPassword(profile);
   }
@@ -109,7 +110,7 @@ function onPasswordSubmit(password: string, remember: boolean) {
 
 function onPasswordCancel() {
   showPasswordDialog.value = false;
-  logStore.addLog('Info', 'Connexion', 'Annulée', 'Saisie du mot de passe annulée');
+  logStore.addLog('Info', t.connection.log, t.connection.cancelled, t.connection.passwordCancelled);
 }
 
 function onDisconnect() {
@@ -118,48 +119,64 @@ function onDisconnect() {
 </script>
 
 <template>
-  <div class="toolbar">
+  <div class="toolbar" role="toolbar" :aria-label="t.toolbar.label">
     <div class="toolbar-group">
       <button
         class="toolbar-btn"
-        title="Connexion"
         :disabled="!profileStore.selectedProfile || connectionStore.connected || connectionStore.connecting || !!hostKeyPrompt"
         @click="onConnect"
       >
-        <span class="icon">&#9889;</span>
-        <template v-if="connectionStore.connecting">Connexion...</template>
-        <template v-else>Connexion</template>
+        <span class="icon" aria-hidden="true">&#9889;</span>
+        {{ connectionStore.connecting ? t.toolbar.connecting : t.toolbar.connect }}
       </button>
       <button
         class="toolbar-btn"
-        title="Déconnexion"
         :disabled="!connectionStore.connected"
         @click="onDisconnect"
       >
-        <span class="icon">&#10005;</span>
-        Déconnexion
+        <span class="icon" aria-hidden="true">&#10005;</span>
+        {{ t.toolbar.disconnect }}
       </button>
     </div>
 
     <div class="toolbar-separator" />
 
     <div class="toolbar-group">
-      <button class="toolbar-btn" title="Nouveau dossier (F7)" :disabled="!actions.canMkdir" @click="actions.requestMkdir">
-        <span class="icon">&#128193;</span>
-      </button>
-      <button class="toolbar-btn" title="Renommer (F2)" :disabled="!actions.canRename" @click="actions.requestRename">
-        <span class="icon">&#9998;&#65039;</span>
-      </button>
-      <button class="toolbar-btn" title="Supprimer (Suppr)" :disabled="!actions.canDelete" @click="actions.requestDelete">
-        <span class="icon">&#128465;</span>
+      <button
+        class="toolbar-btn"
+        :title="t.toolbar.mkdir"
+        :aria-label="t.toolbar.mkdir"
+        :disabled="!actions.canMkdir"
+        @click="actions.requestMkdir"
+      >
+        <span class="icon" aria-hidden="true">&#128193;</span>
       </button>
       <button
         class="toolbar-btn"
-        title="Propriétés et droits (Ctrl+I / ⌘I)"
+        :title="t.toolbar.rename"
+        :aria-label="t.toolbar.rename"
+        :disabled="!actions.canRename"
+        @click="actions.requestRename"
+      >
+        <span class="icon" aria-hidden="true">&#9998;&#65039;</span>
+      </button>
+      <button
+        class="toolbar-btn"
+        :title="t.toolbar.delete"
+        :aria-label="t.toolbar.delete"
+        :disabled="!actions.canDelete"
+        @click="actions.requestDelete"
+      >
+        <span class="icon" aria-hidden="true">&#128465;</span>
+      </button>
+      <button
+        class="toolbar-btn"
+        :title="t.toolbar.properties"
+        :aria-label="t.toolbar.properties"
         :disabled="!actions.canShowProperties"
         @click="actions.requestProperties"
       >
-        <span class="icon">&#9432;</span>
+        <span class="icon" aria-hidden="true">&#9432;</span>
       </button>
     </div>
 
@@ -168,56 +185,61 @@ function onDisconnect() {
     <div class="toolbar-group">
       <button
         class="toolbar-btn"
-        title="Envoyer la sélection locale vers le serveur (F5)"
+        :title="t.toolbar.uploadHint"
         :disabled="!actions.canUpload"
         @click="actions.transfer('local')"
       >
-        <span class="icon">&uarr;</span>
-        Upload
+        <span class="icon" aria-hidden="true">&uarr;</span>
+        {{ t.toolbar.upload }}
       </button>
       <button
         class="toolbar-btn"
-        title="Télécharger la sélection distante (F5)"
+        :title="t.toolbar.downloadHint"
         :disabled="!actions.canDownload"
         @click="actions.transfer('remote')"
       >
-        <span class="icon">&darr;</span>
-        Download
+        <span class="icon" aria-hidden="true">&darr;</span>
+        {{ t.toolbar.download }}
       </button>
       <button
         class="toolbar-btn"
-        title="Déplacer la sélection du panneau actif vers l'autre : copie, puis suppression de l'original (F6)"
+        :title="t.toolbar.moveHint"
         :disabled="!actions.canMove"
         @click="actions.requestMove()"
       >
-        <span class="icon">&#8669;</span>
-        Déplacer
+        <span class="icon" aria-hidden="true">&#8669;</span>
+        {{ t.toolbar.move }}
       </button>
       <button
         class="toolbar-btn"
-        title="Ouvrir le fichier distant dans une application locale ; chaque enregistrement est renvoyé (F4)"
+        :title="t.toolbar.editHint"
         :disabled="!actions.canEdit"
         @click="actions.requestEdit"
       >
-        <span class="icon">&#128221;</span>
-        Éditer
+        <span class="icon" aria-hidden="true">&#128221;</span>
+        {{ t.toolbar.edit }}
       </button>
       <button
         class="toolbar-btn"
-        title="Comparer et synchroniser le dossier local et le dossier distant affichés"
+        :title="t.toolbar.syncHint"
         :disabled="!connectionStore.connected || !connectionStore.currentPath || !localFiles.currentPath"
         @click="showSync = true"
       >
-        <span class="icon">&#8644;</span>
-        Synchroniser
+        <span class="icon" aria-hidden="true">&#8644;</span>
+        {{ t.toolbar.sync }}
       </button>
     </div>
 
     <div class="toolbar-spacer" />
 
     <div class="toolbar-group">
-      <button class="toolbar-btn" title="Paramètres" @click="showSettings = true">
-        <span class="icon">&#9881;</span>
+      <button
+        class="toolbar-btn"
+        :title="t.toolbar.settings"
+        :aria-label="t.toolbar.settings"
+        @click="showSettings = true"
+      >
+        <span class="icon" aria-hidden="true">&#9881;</span>
       </button>
     </div>
   </div>
@@ -295,6 +317,11 @@ function onDisconnect() {
 
 .toolbar-btn:active:not(:disabled) {
   background: var(--color-active);
+}
+
+.toolbar-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
 }
 
 .toolbar-btn:disabled {

@@ -5,9 +5,12 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 
 use crate::protocols::ProtocolType;
+
+/// "system" follows the system language; the interface has these dictionaries (src/i18n).
+const LANGUAGES: [&str; 3] = ["system", "fr", "en"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -77,7 +80,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            language: "fr".to_string(),
+            language: "system".to_string(),
             theme: Theme::System,
             concurrent_transfers: 2,
             show_hidden_files: true,
@@ -89,6 +92,9 @@ impl Default for AppConfig {
 impl AppConfig {
     /// Brings hand-edited or out-of-range values back within what the app supports.
     pub fn sanitized(mut self) -> Self {
+        if !LANGUAGES.contains(&self.language.as_str()) {
+            self.language = "system".to_string();
+        }
         self.concurrent_transfers = self
             .concurrent_transfers
             .clamp(MIN_CONCURRENT_TRANSFERS, MAX_CONCURRENT_TRANSFERS);
@@ -100,7 +106,7 @@ impl AppConfig {
         match std::fs::read_to_string(path) {
             Ok(data) => serde_json::from_str::<Self>(&data)
                 .map(Self::sanitized)
-                .map_err(|e| OmniError::Config(format!("{}: {e}", path.display()))),
+                .map_err(|e| OmniError::Config(Msg::new("settings.invalid").with("path", path.display()).detail(e))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(OmniError::io_context(path.display(), e)),
         }
@@ -110,7 +116,7 @@ impl AppConfig {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| OmniError::io_context(dir.display(), e))?;
         }
-        let data = serde_json::to_string_pretty(self).map_err(|e| OmniError::Config(e.to_string()))?;
+        let data = serde_json::to_string_pretty(self).map_err(|e| OmniError::Config(Msg::new("settings.encode").detail(e)))?;
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, data).map_err(|e| OmniError::io_context(tmp.display(), e))?;
         std::fs::rename(&tmp, path).map_err(|e| OmniError::io_context(path.display(), e))

@@ -6,7 +6,8 @@ import type { ConflictStrategy, SyncAction, TransferDirection, TransferEvent, Tr
 import { useLogStore } from './logs';
 import { useLocalFilesStore } from './localFiles';
 import { useConnectionStore } from './connection';
-import { errorMessage } from '../utils/errors';
+import { errorMessage, type BackendError } from '../utils/errors';
+import { t } from '../i18n';
 
 export interface QueuedTransfer extends Omit<TransferJob, 'direction'> {
   direction: TransferDirection | 'Sync';
@@ -16,7 +17,23 @@ export interface QueuedTransfer extends Omit<TransferJob, 'direction'> {
   profile_id: string | null;
   /// Move: the source is removed once everything is copied.
   delete_source: boolean;
-  error?: string;
+  /// Why it failed, or what went wrong in a job that finished anyway.
+  errors: BackendError[];
+  /// Problems beyond those listed.
+  more_errors: number;
+}
+
+/// One problem per line, translated in the current language.
+export function jobProblems(job: QueuedTransfer): string {
+  const lines = job.errors.map(errorMessage);
+  if (job.more_errors > 0) lines.push(t.common.more(job.more_errors));
+  return lines.join('\n');
+}
+
+function jobAction(direction: QueuedTransfer['direction'], move: boolean) {
+  if (direction === 'Sync') return t.log.sync;
+  if (move) return t.log.move(direction === 'Upload');
+  return direction === 'Upload' ? t.log.upload : t.log.download;
 }
 
 const FINISHED = new Set(['Completed', 'CompletedWithWarnings', 'Skipped', 'Cancelled', 'Failed']);
@@ -51,7 +68,10 @@ export const useTransfersStore = defineStore('transfers', () => {
     job.total_bytes = event.total_bytes;
     job.transferred_bytes = event.transferred_bytes;
     if (event.destination) job.destination = event.destination;
-    if (event.error) job.error = event.error;
+    if (event.errors.length > 0) {
+      job.errors = event.errors;
+      job.more_errors = event.more_errors;
+    }
 
     if (FINISHED.has(event.status)) {
       onFinished(job);
@@ -60,23 +80,23 @@ export const useTransfersStore = defineStore('transfers', () => {
 
   function onFinished(job: QueuedTransfer) {
     const logStore = useLogStore();
-    const action =
-      job.direction === 'Sync' ? 'Synchronisation' : job.delete_source ? `Déplacement (${job.direction})` : job.direction;
+    const action = jobAction(job.direction, job.delete_source);
+    const problems = jobProblems(job);
     switch (job.status) {
       case 'Completed':
-        logStore.addLog('Info', action, 'OK', `${job.source} → ${job.destination}`);
+        logStore.addLog('Info', action, t.log.ok, `${job.source} → ${job.destination}`);
         break;
       case 'CompletedWithWarnings':
-        logStore.addLog('Warning', action, 'Partiel', `${job.source} → ${job.destination} — ${job.error ?? ''}`);
+        logStore.addLog('Warning', action, t.log.partial, `${job.source} → ${job.destination} — ${problems}`);
         break;
       case 'Skipped':
-        logStore.addLog('Info', action, 'Ignoré', `${job.source} — la destination existe déjà`);
+        logStore.addLog('Info', action, t.log.skipped, `${job.source} — ${t.log.alreadyThere}`);
         break;
       case 'Cancelled':
-        logStore.addLog('Info', action, 'Annulé', job.source);
+        logStore.addLog('Info', action, t.log.cancelled, job.source);
         break;
       case 'Failed':
-        logStore.addLog('Error', action, 'Échec', `${job.source} — ${job.error ?? ''}`);
+        logStore.addLog('Error', action, t.log.failed, `${job.source} — ${problems}`);
         break;
     }
 
@@ -121,7 +141,7 @@ export const useTransfersStore = defineStore('transfers', () => {
       track(id, direction, source, destDir, conflict, deleteSource);
       return true;
     } catch (err) {
-      useLogStore().addLog('Error', direction, 'Échec', `${source} — ${errorMessage(err)}`);
+      useLogStore().addLog('Error', jobAction(direction, deleteSource), t.log.failed, `${source} — ${errorMessage(err)}`);
       return false;
     }
   }
@@ -132,7 +152,7 @@ export const useTransfersStore = defineStore('transfers', () => {
       const id = await invoke<string>('start_sync', { localRoot, remoteRoot, actions });
       track(id, 'Sync', localRoot, remoteRoot, 'Overwrite', false);
     } catch (err) {
-      useLogStore().addLog('Error', 'Synchronisation', 'Échec', `${localRoot} — ${errorMessage(err)}`);
+      useLogStore().addLog('Error', t.log.sync, t.log.failed, `${localRoot} — ${errorMessage(err)}`);
     }
   }
 
@@ -156,6 +176,8 @@ export const useTransfersStore = defineStore('transfers', () => {
       transferred_bytes: 0,
       conflict_strategy: conflict,
       delete_source: deleteSource,
+      errors: [],
+      more_errors: 0,
     });
     const buffered = early.get(id);
     if (buffered) {
@@ -212,9 +234,14 @@ export const useTransfersStore = defineStore('transfers', () => {
     try {
       await invoke('set_queue_paused', { paused });
       queuePaused.value = paused;
-      useLogStore().addLog('Info', "File d'attente", paused ? 'En pause' : 'Reprise', paused ? 'Transferts suspendus' : 'Transferts repris');
+      useLogStore().addLog(
+        'Info',
+        t.log.queue,
+        paused ? t.log.queuePaused : t.log.queueResumed,
+        paused ? t.log.queuePausedDetail : t.log.queueResumedDetail,
+      );
     } catch (err) {
-      useLogStore().addLog('Error', "File d'attente", 'Échec', errorMessage(err));
+      useLogStore().addLog('Error', t.log.queue, t.log.failed, errorMessage(err));
     }
   }
 

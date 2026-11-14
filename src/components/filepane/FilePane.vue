@@ -13,10 +13,12 @@ const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 
 </script>
 
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue';
+import { ref, watch, computed, nextTick, useId } from 'vue';
 import type { FileEntry, PaneSide } from '../../types';
 import { formatDate, formatSize } from '../../utils/format';
 import { useSettingsStore } from '../../stores/settings';
+import { t } from '../../i18n';
+import EntryIcon from '../dialogs/EntryIcon.vue';
 
 const props = defineProps<{
   title: string;
@@ -57,6 +59,9 @@ const DRAG_TYPE = 'application/x-omniscp-files';
 
 const editPath = ref(props.path);
 const anchor = ref<string | null>(null);
+/// The row the keyboard is on; screen readers announce it.
+const cursor = ref<string | null>(null);
+const rowIdPrefix = useId();
 const dropTarget = ref(false);
 
 const filterText = ref('');
@@ -112,7 +117,7 @@ function ariaSort(key: SortKey) {
 function ownerTitle(file: FileEntry) {
   const user = file.owner ?? file.uid;
   const group = file.group ?? file.gid;
-  return user === undefined ? '' : `Propriétaire : ${user}${group === undefined ? '' : ` — groupe : ${group}`}`;
+  return user === undefined ? '' : t.panes.ownerTitle(String(user), group === undefined ? undefined : String(group));
 }
 
 function onFilterKeydown(e: KeyboardEvent) {
@@ -122,6 +127,7 @@ function onFilterKeydown(e: KeyboardEvent) {
 watch(() => props.path, (val) => {
   editPath.value = val;
   anchor.value = null;
+  cursor.value = null;
   filterText.value = '';
 });
 
@@ -152,6 +158,31 @@ function onRowClick(e: MouseEvent, file: FileEntry, index: number) {
     emit('update:selected', [file.path]);
   }
   anchor.value = file.path;
+  cursor.value = file.path;
+}
+
+const cursorIndex = computed(() => visibleFiles.value.findIndex((f) => f.path === cursor.value));
+
+function rowId(index: number) {
+  return `${rowIdPrefix}-${index}`;
+}
+
+/// Arrow keys, Home and End move the cursor; Shift extends the selection from the anchor.
+function moveCursor(index: number, extend: boolean) {
+  const files = visibleFiles.value;
+  if (files.length === 0) return;
+  const target = files[Math.max(0, Math.min(files.length - 1, index))];
+  cursor.value = target.path;
+  const from = files.findIndex((f) => f.path === anchor.value);
+  if (extend && from >= 0) {
+    const to = files.indexOf(target);
+    const [lo, hi] = from < to ? [from, to] : [to, from];
+    emit('update:selected', files.slice(lo, hi + 1).map((f) => f.path));
+  } else {
+    anchor.value = target.path;
+    emit('update:selected', [target.path]);
+  }
+  nextTick(() => document.getElementById(rowId(files.indexOf(target)))?.scrollIntoView({ block: 'nearest' }));
 }
 
 function onDblClick(file: FileEntry) {
@@ -166,7 +197,16 @@ function onDblClickParent() {
 
 function onListKeydown(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key.toLowerCase() === 'a') {
+  const plain = !mod && !e.altKey;
+  const current = cursorIndex.value >= 0 ? cursorIndex.value : visibleFiles.value.findIndex((f) => selectedSet.value.has(f.path));
+  if (plain && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault();
+    const step = e.key === 'ArrowDown' ? 1 : -1;
+    moveCursor(current < 0 ? (step > 0 ? 0 : visibleFiles.value.length - 1) : current + step, e.shiftKey);
+  } else if (plain && (e.key === 'Home' || e.key === 'End')) {
+    e.preventDefault();
+    moveCursor(e.key === 'Home' ? 0 : visibleFiles.value.length - 1, e.shiftKey);
+  } else if (mod && e.key.toLowerCase() === 'a') {
     e.preventDefault();
     emit('update:selected', visibleFiles.value.map((f) => f.path));
   } else if (e.key === 'Delete' || (mod && e.key === 'Backspace')) {
@@ -259,28 +299,30 @@ function onDrop(e: DragEvent) {
   >
     <div class="pane-header">
       <span class="pane-title">{{ props.title }}</span>
-      <span v-if="hiddenCount > 0" class="hidden-count" :title="'Masqués par le filtre ou parce que cachés'">
-        {{ hiddenCount }} masqué(s)
+      <span v-if="hiddenCount > 0" class="hidden-count" :title="t.panes.hiddenHint">
+        {{ t.panes.hidden(hiddenCount) }}
       </span>
       <input
         v-model="filterText"
         type="search"
         class="filter-input"
-        placeholder="Filtrer"
-        aria-label="Filtrer les noms"
+        :placeholder="t.panes.filter"
+        :aria-label="t.panes.filterLabel"
         spellcheck="false"
         @keydown="onFilterKeydown"
       />
     </div>
 
     <div class="path-bar">
-      <button class="nav-btn" title="Précédent (Alt+←)" aria-label="Précédent" :disabled="!canGoBack" @click="emit('back')">←</button>
-      <button class="nav-btn" title="Suivant (Alt+→)" aria-label="Suivant" :disabled="!canGoForward" @click="emit('forward')">→</button>
-      <button class="nav-btn" title="Dossier parent (Retour arrière)" aria-label="Dossier parent" @click="emit('navigate-up')">↑</button>
-      <button class="nav-btn" title="Actualiser (Ctrl+R / ⌘R)" aria-label="Actualiser" @click="emit('refresh')">↻</button>
+      <button class="nav-btn" :title="t.panes.backHint" :aria-label="t.panes.back" :disabled="!canGoBack" @click="emit('back')">←</button>
+      <button class="nav-btn" :title="t.panes.forwardHint" :aria-label="t.panes.forward" :disabled="!canGoForward" @click="emit('forward')">→</button>
+      <button class="nav-btn" :title="t.panes.upHint" :aria-label="t.panes.up" @click="emit('navigate-up')">↑</button>
+      <button class="nav-btn" :title="t.panes.refreshHint" :aria-label="t.panes.refresh" @click="emit('refresh')">↻</button>
       <input
         type="text"
         class="path-input"
+        :aria-label="t.panes.path"
+        spellcheck="false"
         v-model="editPath"
         @keydown="onPathKeydown"
       />
@@ -288,46 +330,65 @@ function onDrop(e: DragEvent) {
 
     <div v-if="error" class="pane-error" role="alert">{{ error }}</div>
 
-    <div class="file-list-container" tabindex="0" @keydown="onListKeydown" @focus="emit('activate')">
-      <div v-if="props.loading" class="loading-indicator">Chargement...</div>
-      <table v-else class="file-list">
-        <thead>
-          <tr>
-            <th class="col-name sortable" :aria-sort="ariaSort('name')" @click="sortBy('name')">Nom{{ sortMark('name') }}</th>
-            <th class="col-size sortable" :aria-sort="ariaSort('size')" @click="sortBy('size')">Taille{{ sortMark('size') }}</th>
-            <th class="col-date sortable" :aria-sort="ariaSort('modified')" @click="sortBy('modified')">Modifié{{ sortMark('modified') }}</th>
-            <th class="col-perms">Droits</th>
-            <th class="col-owner">Propriétaire</th>
+    <div
+      class="file-list-container"
+      tabindex="0"
+      role="grid"
+      aria-multiselectable="true"
+      :aria-label="t.panes.listLabel(props.title)"
+      :aria-busy="props.loading"
+      :aria-activedescendant="cursorIndex >= 0 ? rowId(cursorIndex) : undefined"
+      @keydown="onListKeydown"
+      @focus="emit('activate')"
+    >
+      <div v-if="props.loading" class="loading-indicator" role="status">{{ t.panes.loading }}</div>
+      <table v-else class="file-list" role="presentation">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader" class="col-name" :aria-sort="ariaSort('name')">
+              <button class="sort-btn" tabindex="-1" @click="sortBy('name')">{{ t.panes.name }}{{ sortMark('name') }}</button>
+            </th>
+            <th role="columnheader" class="col-size" :aria-sort="ariaSort('size')">
+              <button class="sort-btn" tabindex="-1" @click="sortBy('size')">{{ t.panes.size }}{{ sortMark('size') }}</button>
+            </th>
+            <th role="columnheader" class="col-date" :aria-sort="ariaSort('modified')">
+              <button class="sort-btn" tabindex="-1" @click="sortBy('modified')">{{ t.panes.modified }}{{ sortMark('modified') }}</button>
+            </th>
+            <th role="columnheader" class="col-perms">{{ t.panes.permissions }}</th>
+            <th role="columnheader" class="col-owner">{{ t.panes.owner }}</th>
           </tr>
         </thead>
-        <tbody>
-          <tr class="file-row file-row-parent" @dblclick="onDblClickParent">
-            <td class="col-name">
-              <span class="file-icon">📁</span>
+        <tbody role="rowgroup">
+          <tr class="file-row file-row-parent" role="row" :aria-label="t.panes.parent" @dblclick="onDblClickParent">
+            <td class="col-name" role="gridcell">
+              <span class="file-icon" aria-hidden="true">📁</span>
               ..
             </td>
-            <td class="col-size"></td>
-            <td class="col-date"></td>
-            <td class="col-perms"></td>
-            <td class="col-owner"></td>
+            <td class="col-size" role="gridcell"></td>
+            <td class="col-date" role="gridcell"></td>
+            <td class="col-perms" role="gridcell"></td>
+            <td class="col-owner" role="gridcell"></td>
           </tr>
           <tr
             v-for="(file, index) in visibleFiles"
+            :id="rowId(index)"
             :key="file.path"
-            :class="['file-row', { selected: selectedSet.has(file.path) }]"
+            :class="['file-row', { selected: selectedSet.has(file.path), cursor: cursor === file.path }]"
+            role="row"
+            :aria-selected="selectedSet.has(file.path)"
             draggable="true"
             @click="onRowClick($event, file, index)"
             @dblclick="onDblClick(file)"
             @dragstart="onDragStart($event, file)"
           >
-            <td class="col-name">
-              <span class="file-icon">{{ file.is_symlink ? '🔗' : file.is_dir ? '📁' : '📄' }}</span>
+            <td class="col-name" role="gridcell">
+              <EntryIcon class="file-icon" :entry="file" />
               {{ file.name }}
             </td>
-            <td class="col-size">{{ file.is_dir ? '' : formatSize(file.size) }}</td>
-            <td class="col-date">{{ formatDate(file.modified) }}</td>
-            <td class="col-perms">{{ file.permissions ?? '' }}</td>
-            <td class="col-owner" :title="ownerTitle(file)">{{ file.owner ?? file.uid ?? '' }}</td>
+            <td class="col-size" role="gridcell">{{ file.is_dir ? '' : formatSize(file.size) }}</td>
+            <td class="col-date" role="gridcell">{{ formatDate(file.modified) }}</td>
+            <td class="col-perms" role="gridcell">{{ file.permissions ?? '' }}</td>
+            <td class="col-owner" role="gridcell" :title="ownerTitle(file)">{{ file.owner ?? file.uid ?? '' }}</td>
           </tr>
         </tbody>
       </table>
@@ -374,11 +435,19 @@ function onDrop(e: DragEvent) {
   margin-left: 0;
 }
 
-.sortable {
+.sort-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
   cursor: pointer;
 }
 
-.sortable:hover {
+.sort-btn:hover {
   color: var(--color-text);
 }
 
@@ -505,6 +574,10 @@ function onDrop(e: DragEvent) {
 
 .file-list-container:focus {
   outline: none;
+}
+
+.file-list-container:focus-visible .file-row.cursor td {
+  box-shadow: inset 0 1px 0 var(--color-accent), inset 0 -1px 0 var(--color-accent);
 }
 
 .file-row {

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 use crate::protocols::{ConnectParams, Protocol, for_profile, remote_file_name, remote_join, remote_parent, unique_name};
 use crate::sync::{self, SyncAction, SyncActionKind};
 use crate::transfer::{ConflictStrategy, TransferDirection, TransferStatus};
@@ -61,7 +61,7 @@ impl Request {
 /// Receives every status change of every job.
 pub type EventSink = Arc<dyn Fn(TransferEvent) + Send + Sync>;
 
-/// How many problems are spelled out in a job's error message.
+/// How many problems a finished job spells out.
 const MAX_LISTED_PROBLEMS: usize = 5;
 
 #[derive(Clone, Serialize)]
@@ -71,7 +71,10 @@ pub struct TransferEvent {
     pub destination: Option<String>,
     pub total_bytes: u64,
     pub transferred_bytes: u64,
-    pub error: Option<String>,
+    /// Why the job failed, or what went wrong in a job that finished anyway.
+    pub errors: Vec<OmniError>,
+    /// Problems beyond those listed in `errors`.
+    pub more_errors: usize,
 }
 
 /// Switches for one job, shared with the worker running it.
@@ -138,7 +141,8 @@ impl Shared {
             destination: None,
             total_bytes: 0,
             transferred_bytes: 0,
-            error: None,
+            errors: Vec::new(),
+            more_errors: 0,
         });
     }
 }
@@ -174,7 +178,7 @@ impl TransferQueue {
     fn send(&self, request: Request) -> Result<()> {
         let mut state = self.shared.lock();
         if state.closed {
-            return Err(OmniError::Transfer("Transfer worker is not running".into()));
+            return Err(OmniError::Transfer(Msg::new("queue.closed")));
         }
         state.controls.insert(request.id().to_string(), Arc::default());
         state.pending.push_back(request);
@@ -265,12 +269,15 @@ fn run_worker(shared: Arc<Shared>, params: ConnectParams) {
             ensure_connected(&mut conn, &params).and_then(|c| job.run(c, &request))
         };
 
-        let (status, error) = match outcome {
-            Ok(status) => (status, job.problem_summary()),
-            Err(OmniError::Cancelled) => (TransferStatus::Cancelled, None),
-            Err(e) => (TransferStatus::Failed, Some(e.to_string())),
+        let (status, errors, more) = match outcome {
+            Ok(status) => {
+                let (errors, more) = job.problem_summary();
+                (status, errors, more)
+            }
+            Err(OmniError::Cancelled) => (TransferStatus::Cancelled, Vec::new(), 0),
+            Err(e) => (TransferStatus::Failed, vec![e], 0),
         };
-        job.emit(status, error);
+        job.emit_with(status, errors, more);
 
         shared.lock().controls.remove(request.id());
     }
@@ -309,21 +316,26 @@ struct Job<'a> {
     /// Files a `Merge` found already at the destination.
     already_present: u64,
     merge: bool,
-    failures: Vec<String>,
+    failures: Vec<OmniError>,
     skipped_links: Vec<String>,
     /// Sources fully copied, children before their folder: what a move removes.
     copied: Vec<(String, bool)>,
 }
 
 impl Job<'_> {
-    fn emit(&self, status: TransferStatus, error: Option<String>) {
+    fn emit(&self, status: TransferStatus) {
+        self.emit_with(status, Vec::new(), 0);
+    }
+
+    fn emit_with(&self, status: TransferStatus, errors: Vec<OmniError>, more_errors: usize) {
         (self.sink)(TransferEvent {
             id: self.id.to_string(),
             status,
             destination: self.destination.clone(),
             total_bytes: self.total,
             transferred_bytes: self.transferred,
-            error,
+            errors,
+            more_errors,
         });
     }
 
@@ -338,7 +350,7 @@ impl Job<'_> {
     /// Waits while the job or the queue is paused. Returns false once the job is cancelled.
     fn wait_if_paused(&mut self, conn: &dyn Protocol) -> bool {
         if self.held() && !self.cancelled() {
-            self.emit(TransferStatus::Paused, None);
+            self.emit(TransferStatus::Paused);
             let mut last_keepalive = Instant::now();
             while self.held() && !self.cancelled() {
                 std::thread::sleep(PAUSE_POLL);
@@ -349,7 +361,7 @@ impl Job<'_> {
             }
             if !self.cancelled() {
                 self.last_emit = Instant::now();
-                self.emit(TransferStatus::InProgress, None);
+                self.emit(TransferStatus::InProgress);
             }
         }
         !self.cancelled()
@@ -360,7 +372,7 @@ impl Job<'_> {
         self.transferred += bytes;
         if self.last_emit.elapsed() >= PROGRESS_INTERVAL {
             self.last_emit = Instant::now();
-            self.emit(TransferStatus::InProgress, None);
+            self.emit(TransferStatus::InProgress);
         }
         self.wait_if_paused(conn)
     }
@@ -378,7 +390,7 @@ impl Job<'_> {
         if matches!(err, OmniError::Cancelled) || !conn.is_alive() {
             return Err(err);
         }
-        self.failures.push(err.to_string());
+        self.failures.push(err);
         Ok(())
     }
 
@@ -396,20 +408,13 @@ impl Job<'_> {
         }
     }
 
-    fn problem_summary(&self) -> Option<String> {
-        let skipped = self
-            .skipped_links
-            .iter()
-            .map(|path| format!("{path}: link to a folder, not followed"));
-        let problems: Vec<String> = self.failures.iter().cloned().chain(skipped).collect();
-        if problems.is_empty() {
-            return None;
-        }
-        let mut summary = problems[..problems.len().min(MAX_LISTED_PROBLEMS)].join("\n");
-        if problems.len() > MAX_LISTED_PROBLEMS {
-            summary.push_str(&format!("\n... and {} more", problems.len() - MAX_LISTED_PROBLEMS));
-        }
-        Some(summary)
+    /// The first problems, and how many more there were.
+    fn problem_summary(&self) -> (Vec<OmniError>, usize) {
+        let skipped = self.skipped_links.iter().map(|path| link_not_followed(path));
+        let mut problems: Vec<OmniError> = self.failures.iter().cloned().chain(skipped).collect();
+        let more = problems.len().saturating_sub(MAX_LISTED_PROBLEMS);
+        problems.truncate(MAX_LISTED_PROBLEMS);
+        (problems, more)
     }
 
     fn run(&mut self, conn: &dyn Protocol, request: &Request) -> Result<TransferStatus> {
@@ -436,7 +441,7 @@ impl Job<'_> {
                 _ => 0,
             })
             .sum();
-        self.emit(TransferStatus::InProgress, None);
+        self.emit(TransferStatus::InProgress);
 
         // Shortest paths first to create parents; deletes come last, deepest first,
         // so a folder is empty by the time it is removed.
@@ -458,7 +463,7 @@ impl Job<'_> {
     fn sync_action(&mut self, conn: &dyn Protocol, request: &SyncRequest, action: &SyncAction) -> Result<()> {
         let local = Path::new(&request.local_root).join(&action.path);
         let remote = remote_join(&request.remote_root, &action.path);
-        let changed = || OmniError::Transfer(format!("{}: changed since the preview, left untouched", action.path));
+        let changed = || OmniError::Transfer(Msg::new("sync.changedSincePreview").with("path", &action.path));
 
         match action.kind {
             SyncActionKind::Upload => {
@@ -519,7 +524,7 @@ impl Job<'_> {
         let name = source
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .ok_or_else(|| OmniError::Transfer(format!("Invalid source path {}", request.source)))?;
+            .ok_or_else(|| OmniError::Transfer(Msg::new("transfer.invalidSource").with("path", &request.source)))?;
         if is_local_dir_link(&source) {
             return Err(link_not_followed(&request.source));
         }
@@ -534,7 +539,7 @@ impl Job<'_> {
         self.destination = Some(dest.clone());
 
         self.total = local_tree_size(&source)?;
-        self.emit(TransferStatus::InProgress, None);
+        self.emit(TransferStatus::InProgress);
         self.upload_tree(conn, &source, &dest)?;
         if request.delete_source && self.final_status() == TransferStatus::Completed {
             self.remove_copied(|path, is_dir| {
@@ -551,7 +556,7 @@ impl Job<'_> {
     fn remove_copied(&mut self, mut remove: impl FnMut(&str, bool) -> Result<()>) {
         for (path, is_dir) in std::mem::take(&mut self.copied) {
             if let Err(e) = remove(&path, is_dir) {
-                self.failures.push(format!("copied, but the source could not be removed: {e}"));
+                self.failures.push(OmniError::Transfer(Msg::new("transfer.sourceNotRemoved").cause(e)));
             }
         }
     }
@@ -612,7 +617,7 @@ impl Job<'_> {
         self.destination = Some(dest.to_string_lossy().into_owned());
 
         self.total = remote_tree_size(conn, &request.source, entry.is_dir, entry.size)?;
-        self.emit(TransferStatus::InProgress, None);
+        self.emit(TransferStatus::InProgress);
         self.download_tree(conn, &request.source, entry.is_dir, &dest)?;
         if request.delete_source && self.final_status() == TransferStatus::Completed {
             self.remove_copied(|path, is_dir| if is_dir { conn.remove_empty_dir(path) } else { conn.delete(path) });
@@ -680,7 +685,7 @@ fn is_local_dir_link(path: &Path) -> bool {
 }
 
 fn link_not_followed(path: &str) -> OmniError {
-    OmniError::Transfer(format!("{path} is a link to a folder, which is not followed"))
+    OmniError::Transfer(Msg::new("transfer.linkNotFollowed").with("path", path))
 }
 
 /// Unreadable subfolders only make the total an underestimate; copying them reports the error.

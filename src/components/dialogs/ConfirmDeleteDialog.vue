@@ -2,6 +2,8 @@
 import { ref, onMounted, computed } from 'vue';
 import BaseDialog from './BaseDialog.vue';
 import type { FileEntry } from '../../types';
+import { t } from '../../i18n';
+import EntryIcon from './EntryIcon.vue';
 
 const props = defineProps<{ entries: FileEntry[]; remote: boolean }>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
@@ -19,20 +21,16 @@ onMounted(() => {
 </script>
 
 <template>
-  <BaseDialog :title="remote ? 'Supprimer sur le serveur' : 'Supprimer localement'" :width="420" @cancel="emit('cancel')">
-    <p>
-      Supprimer définitivement
-      {{ entries.length === 1 ? 'cet élément' : `ces ${entries.length} éléments` }} ?
-      Cette action est irréversible.
-    </p>
+  <BaseDialog :title="remote ? t.dialogs.deleteRemoteTitle : t.dialogs.deleteLocalTitle" :width="420" @cancel="emit('cancel')">
+    <p>{{ t.dialogs.deleteText(entries.length) }}</p>
     <ul class="entry-list">
-      <li v-for="entry in listed" :key="entry.path">{{ entry.is_symlink ? '🔗' : entry.is_dir ? '📁' : '📄' }} {{ entry.name }}</li>
-      <li v-if="entries.length > MAX_LISTED" class="more">… et {{ entries.length - MAX_LISTED }} autre(s)</li>
+      <li v-for="entry in listed" :key="entry.path"><EntryIcon :entry="entry" /> {{ entry.name }}</li>
+      <li v-if="entries.length > MAX_LISTED" class="more">{{ t.common.more(entries.length - MAX_LISTED) }}</li>
     </ul>
-    <p v-if="hasDirs" class="warning">Les dossiers seront supprimés avec tout leur contenu.</p>
+    <p v-if="hasDirs" class="warning">{{ t.dialogs.deleteFolders }}</p>
     <template #footer>
-      <button ref="cancelRef" class="btn" @click="emit('cancel')">Annuler</button>
-      <button class="btn btn-danger" @click="emit('confirm')">Supprimer</button>
+      <button ref="cancelRef" class="btn" @click="emit('cancel')">{{ t.common.cancel }}</button>
+      <button class="btn btn-danger" @click="emit('confirm')">{{ t.dialogs.delete }}</button>
     </template>
   </BaseDialog>
 </template>

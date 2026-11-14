@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 
 /// Above this size, the oldest half of the journal is dropped.
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
@@ -37,7 +37,7 @@ fn append_with_limit(path: &Path, entry: &LogEntry, max_bytes: u64) -> Result<()
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let line = serde_json::to_string(entry).map_err(|e| OmniError::Config(e.to_string()))?;
+    let line = serde_json::to_string(entry).map_err(|e| OmniError::Config(Msg::new("log.encode").detail(e)))?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{line}")?;
     drop(file);

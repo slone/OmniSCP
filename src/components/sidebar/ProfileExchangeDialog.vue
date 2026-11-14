@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, useId } from 'vue';
 import BaseDialog from '../dialogs/BaseDialog.vue';
 import type { Profile } from '../../types';
+import { intlLocale, t } from '../../i18n';
 
 const props = defineProps<{
   mode: 'import' | 'export';
@@ -17,7 +18,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{ confirm: [profiles: Profile[]]; cancel: [] }>();
 
-const collator = new Intl.Collator('fr', { numeric: true, sensitivity: 'base' });
+const collator = new Intl.Collator(intlLocale(), { numeric: true, sensitivity: 'base' });
+const ids = useId();
 
 function sameServer(a: Profile, b: Profile) {
   return (
@@ -97,16 +99,16 @@ function onConfirm() {
 </script>
 
 <template>
-  <BaseDialog :title="mode === 'import' ? 'Importer des profils' : 'Exporter des profils'" :width="480" @cancel="emit('cancel')">
+  <BaseDialog :title="mode === 'import' ? t.exchange.importTitle : t.exchange.exportTitle" :width="480" @cancel="emit('cancel')">
     <div class="toolbar">
-      <span>{{ selection.length }} / {{ profiles.length }} profil(s) sélectionné(s)</span>
+      <span role="status">{{ t.exchange.selected(selection.length, profiles.length) }}</span>
       <span class="links">
-        <button class="link-btn" @click="setAll(true)">Tout</button>
-        <button class="link-btn" @click="setAll(false)">Aucun</button>
+        <button class="link-btn" @click="setAll(true)">{{ t.exchange.all }}</button>
+        <button class="link-btn" @click="setAll(false)">{{ t.exchange.none }}</button>
       </span>
     </div>
 
-    <div class="list" role="group" aria-label="Profils">
+    <div class="list" role="group" :aria-label="t.exchange.list">
       <section v-for="section in sections" :key="section.name">
         <label v-if="sections.length > 1 || section.name" class="section">
           <input
@@ -115,46 +117,43 @@ function onConfirm() {
             :indeterminate="sectionState(section.items) === 'some'"
             @change="toggleSection(section.items)"
           />
-          {{ section.name || 'Sans groupe' }}
+          {{ section.name || t.exchange.ungrouped }}
         </label>
         <label v-for="p in section.items" :key="p.id" class="item" :class="{ nested: sections.length > 1 || section.name }">
           <input type="checkbox" :checked="checked.has(p.id)" @change="toggle(p.id)" />
           <span class="name">{{ p.name }}</span>
           <span class="detail">{{ p.protocol }} · {{ p.username }}@{{ p.host }}:{{ p.port }}</span>
-          <span v-if="duplicates.has(p.id)" class="badge" title="Un profil vers le même serveur et le même compte existe déjà">déjà présent</span>
+          <span v-if="duplicates.has(p.id)" class="badge" :title="t.exchange.duplicateHint">{{ t.exchange.duplicate }}</span>
         </label>
       </section>
     </div>
 
     <label v-if="mode === 'import'" class="field">
-      <span class="form-label">Placer dans le groupe</span>
+      <span class="form-label">{{ t.exchange.targetGroup }}</span>
       <input
         v-model="targetGroup"
         class="form-input"
-        list="exchange-groups"
-        placeholder="Garder les groupes du fichier"
+        :list="`${ids}-groups`"
+        :placeholder="t.exchange.keepGroups"
         spellcheck="false"
       />
-      <datalist id="exchange-groups">
+      <datalist :id="`${ids}-groups`">
         <option v-for="g in groups ?? []" :key="g" :value="g" />
       </datalist>
     </label>
 
     <p class="note">
       <template v-if="mode === 'export'">
-        Les mots de passe et passphrases ne sont jamais exportés.
-        <template v-if="keyPaths">Les chemins des clés SSH le sont, mais pas les clés elles-mêmes.</template>
+        {{ t.exchange.noSecrets }}
+        <template v-if="keyPaths">{{ t.exchange.keyPaths }}</template>
       </template>
-      <template v-else>
-        Les profils importés sont ajoutés à côté des vôtres, sans rien remplacer. Le mot de passe sera demandé à la
-        première connexion.
-      </template>
+      <template v-else>{{ t.exchange.importNote }}</template>
     </p>
 
     <template #footer>
-      <button class="btn" @click="emit('cancel')">Annuler</button>
+      <button class="btn" @click="emit('cancel')">{{ t.common.cancel }}</button>
       <button class="btn btn-primary" :disabled="selection.length === 0" @click="onConfirm">
-        {{ mode === 'import' ? `Importer (${selection.length})` : `Exporter (${selection.length})…` }}
+        {{ mode === 'import' ? t.exchange.import(selection.length) : t.exchange.export(selection.length) }}
       </button>
     </template>
   </BaseDialog>
