@@ -2,6 +2,8 @@
   "name": "omniscp",
   "private": true,
   "version": "0.1.0",
+  "description": "Cross-platform SFTP and SCP client with a dual-pane file browser",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "dev": "vite",
