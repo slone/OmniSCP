@@ -1,11 +1,10 @@
 // Background transfer queue: worker threads, each with its own session, so
 // browsing on the main connection stays responsive while files are copied.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -17,6 +16,10 @@ use crate::transfer::{ConflictStrategy, TransferDirection, TransferStatus};
 
 pub const PROGRESS_EVENT: &str = "transfer-progress";
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
+/// How often a paused job checks whether it may go on.
+const PAUSE_POLL: Duration = Duration::from_millis(100);
+/// A paused job keeps its session open; this stops the server from closing it as idle.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 pub struct TransferRequest {
     pub id: String,
@@ -28,6 +31,9 @@ pub struct TransferRequest {
     pub conflict: ConflictStrategy,
     /// Name to use at the destination, when retrying a job that already chose one.
     pub dest_name: Option<String>,
+    /// Move: once everything is copied, remove what was copied from the source side.
+    /// Nothing is removed if any item failed or was left out.
+    pub delete_source: bool,
 }
 
 /// Executes actions of a plan the user reviewed; shows as one job in the queue.
@@ -68,25 +74,93 @@ pub struct TransferEvent {
     pub error: Option<String>,
 }
 
-type CancelFlags = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
+/// Switches for one job, shared with the worker running it.
+#[derive(Default)]
+struct JobControl {
+    cancel: AtomicBool,
+    paused: AtomicBool,
+}
+
+#[derive(Default)]
+struct State {
+    /// Jobs not started yet, in order.
+    pending: VecDeque<Request>,
+    controls: HashMap<String, Arc<JobControl>>,
+    /// The queue was dropped: workers finish what is left (as cancelled) and stop.
+    closed: bool,
+}
+
+struct Shared {
+    state: Mutex<State>,
+    /// Signalled whenever a job may have become ready to start.
+    wake: Condvar,
+    sink: EventSink,
+    /// The whole queue on hold: nothing starts, and running jobs wait between chunks.
+    paused: AtomicBool,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Blocks until a job may start; `None` once the queue is closed and empty.
+    fn next_request(&self) -> Option<(Request, Arc<JobControl>)> {
+        let mut state = self.lock();
+        loop {
+            let st = &*state;
+            let ready = if st.closed {
+                if st.pending.is_empty() {
+                    return None;
+                }
+                Some(0)
+            } else if self.paused.load(Ordering::Relaxed) {
+                None
+            } else {
+                st.pending
+                    .iter()
+                    .position(|r| !st.controls.get(r.id()).is_some_and(|c| c.paused.load(Ordering::Relaxed)))
+            };
+            if let Some(i) = ready {
+                let request = state.pending.remove(i).expect("index found above");
+                let control = state.controls.get(request.id()).cloned().unwrap_or_default();
+                return Some((request, control));
+            }
+            state = self.wake.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// For a job that has not started: only its status is known.
+    fn emit_waiting(&self, id: &str, status: TransferStatus) {
+        (self.sink)(TransferEvent {
+            id: id.to_string(),
+            status,
+            destination: None,
+            total_bytes: 0,
+            transferred_bytes: 0,
+            error: None,
+        });
+    }
+}
 
 pub struct TransferQueue {
-    sender: Sender<Request>,
-    cancels: CancelFlags,
+    shared: Arc<Shared>,
 }
 
 impl TransferQueue {
     /// Runs up to `workers` jobs at once. A worker opens its session on its first job.
     pub fn start(sink: EventSink, params: ConnectParams, workers: u32) -> Self {
-        let (sender, receiver) = mpsc::channel();
-        let receiver = Arc::new(Mutex::new(receiver));
-        let cancels: CancelFlags = Arc::default();
+        let shared = Arc::new(Shared {
+            state: Mutex::default(),
+            wake: Condvar::new(),
+            sink,
+            paused: AtomicBool::new(false),
+        });
         for _ in 0..workers.max(1) {
-            let (sink, params, receiver, cancels) =
-                (Arc::clone(&sink), params.clone(), Arc::clone(&receiver), Arc::clone(&cancels));
-            std::thread::spawn(move || run_worker(sink, params, receiver, cancels));
+            let (shared, params) = (Arc::clone(&shared), params.clone());
+            std::thread::spawn(move || run_worker(shared, params));
         }
-        Self { sender, cancels }
+        Self { shared }
     }
 
     pub fn enqueue(&self, request: TransferRequest) -> Result<()> {
@@ -98,57 +172,81 @@ impl TransferQueue {
     }
 
     fn send(&self, request: Request) -> Result<()> {
-        self.flags()
-            .insert(request.id().to_string(), Arc::new(AtomicBool::new(false)));
-        self.sender
-            .send(request)
-            .map_err(|_| OmniError::Transfer("Transfer worker is not running".into()))
+        let mut state = self.shared.lock();
+        if state.closed {
+            return Err(OmniError::Transfer("Transfer worker is not running".into()));
+        }
+        state.controls.insert(request.id().to_string(), Arc::default());
+        state.pending.push_back(request);
+        self.shared.wake.notify_all();
+        Ok(())
     }
 
+    /// A job that has not started is dropped at once; a running one stops at its next chunk.
     pub fn cancel(&self, id: &str) {
-        if let Some(flag) = self.flags().get(id) {
-            flag.store(true, Ordering::Relaxed);
+        let mut state = self.shared.lock();
+        if let Some(control) = state.controls.get(id) {
+            control.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(i) = state.pending.iter().position(|r| r.id() == id) {
+            state.pending.remove(i);
+            state.controls.remove(id);
+            self.shared.emit_waiting(id, TransferStatus::Cancelled);
         }
     }
 
-    fn flags(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<AtomicBool>>> {
-        self.cancels.lock().unwrap_or_else(|e| e.into_inner())
+    /// A waiting job is held back; a running one stops between two chunks, its session kept open.
+    pub fn pause(&self, id: &str) {
+        let state = self.shared.lock();
+        if let Some(control) = state.controls.get(id) {
+            control.paused.store(true, Ordering::Relaxed);
+            if state.pending.iter().any(|r| r.id() == id) {
+                self.shared.emit_waiting(id, TransferStatus::Paused);
+            }
+        }
+    }
+
+    pub fn resume(&self, id: &str) {
+        let state = self.shared.lock();
+        if let Some(control) = state.controls.get(id) {
+            control.paused.store(false, Ordering::Relaxed);
+            if state.pending.iter().any(|r| r.id() == id) {
+                self.shared.emit_waiting(id, TransferStatus::Pending);
+            }
+        }
+        self.shared.wake.notify_all();
+    }
+
+    /// Holds or releases the whole queue, running jobs included.
+    pub fn set_paused(&self, paused: bool) {
+        let _state = self.shared.lock();
+        self.shared.paused.store(paused, Ordering::Relaxed);
+        self.shared.wake.notify_all();
     }
 }
 
 impl Drop for TransferQueue {
     /// Disconnecting cancels everything still queued or running.
     fn drop(&mut self) {
-        for flag in self.flags().values() {
-            flag.store(true, Ordering::Relaxed);
+        let mut state = self.shared.lock();
+        state.closed = true;
+        for control in state.controls.values() {
+            control.cancel.store(true, Ordering::Relaxed);
         }
+        self.shared.wake.notify_all();
     }
 }
 
-fn run_worker(
-    sink: EventSink,
-    params: ConnectParams,
-    receiver: Arc<Mutex<Receiver<Request>>>,
-    cancels: CancelFlags,
-) {
+fn run_worker(shared: Arc<Shared>, params: ConnectParams) {
     let mut conn: Option<Box<dyn Protocol>> = None;
 
-    // Ends once the queue is dropped and every buffered request was handled.
-    // The lock is released as soon as a request is taken, so other workers pick the next one.
-    loop {
-        let next = receiver.lock().unwrap_or_else(|e| e.into_inner()).recv();
-        let Ok(request) = next else { break };
-        let cancel = cancels
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(request.id())
-            .cloned()
-            .unwrap_or_default();
-
+    // Ends once the queue is dropped and every waiting request was handled.
+    while let Some((request, control)) = shared.next_request() {
         let mut job = Job {
-            sink: &sink,
+            sink: &shared.sink,
             id: request.id(),
-            cancel: &cancel,
+            control: &control,
+            queue_paused: &shared.paused,
             destination: None,
             total: 0,
             transferred: 0,
@@ -158,9 +256,10 @@ fn run_worker(
             merge: false,
             failures: Vec::new(),
             skipped_links: Vec::new(),
+            copied: Vec::new(),
         };
 
-        let outcome = if cancel.load(Ordering::Relaxed) {
+        let outcome = if job.cancelled() {
             Err(OmniError::Cancelled)
         } else {
             ensure_connected(&mut conn, &params).and_then(|c| job.run(c, &request))
@@ -173,10 +272,7 @@ fn run_worker(
         };
         job.emit(status, error);
 
-        cancels
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(request.id());
+        shared.lock().controls.remove(request.id());
     }
 
     if let Some(mut c) = conn {
@@ -203,7 +299,8 @@ fn ensure_connected<'a>(
 struct Job<'a> {
     sink: &'a EventSink,
     id: &'a str,
-    cancel: &'a AtomicBool,
+    control: &'a JobControl,
+    queue_paused: &'a AtomicBool,
     destination: Option<String>,
     total: u64,
     transferred: u64,
@@ -214,6 +311,8 @@ struct Job<'a> {
     merge: bool,
     failures: Vec<String>,
     skipped_links: Vec<String>,
+    /// Sources fully copied, children before their folder: what a move removes.
+    copied: Vec<(String, bool)>,
 }
 
 impl Job<'_> {
@@ -228,21 +327,49 @@ impl Job<'_> {
         });
     }
 
-    /// Called after each copied chunk; throttles events and checks for cancellation.
-    fn on_progress(&mut self, bytes: u64) -> bool {
+    fn cancelled(&self) -> bool {
+        self.control.cancel.load(Ordering::Relaxed)
+    }
+
+    fn held(&self) -> bool {
+        self.control.paused.load(Ordering::Relaxed) || self.queue_paused.load(Ordering::Relaxed)
+    }
+
+    /// Waits while the job or the queue is paused. Returns false once the job is cancelled.
+    fn wait_if_paused(&mut self, conn: &dyn Protocol) -> bool {
+        if self.held() && !self.cancelled() {
+            self.emit(TransferStatus::Paused, None);
+            let mut last_keepalive = Instant::now();
+            while self.held() && !self.cancelled() {
+                std::thread::sleep(PAUSE_POLL);
+                if last_keepalive.elapsed() >= KEEPALIVE_INTERVAL {
+                    conn.keepalive();
+                    last_keepalive = Instant::now();
+                }
+            }
+            if !self.cancelled() {
+                self.last_emit = Instant::now();
+                self.emit(TransferStatus::InProgress, None);
+            }
+        }
+        !self.cancelled()
+    }
+
+    /// Called after each copied chunk; throttles events, pauses and checks for cancellation.
+    fn on_progress(&mut self, conn: &dyn Protocol, bytes: u64) -> bool {
         self.transferred += bytes;
         if self.last_emit.elapsed() >= PROGRESS_INTERVAL {
             self.last_emit = Instant::now();
             self.emit(TransferStatus::InProgress, None);
         }
-        !self.cancel.load(Ordering::Relaxed)
+        self.wait_if_paused(conn)
     }
 
-    fn check_cancel(&self) -> Result<()> {
-        if self.cancel.load(Ordering::Relaxed) {
-            Err(OmniError::Cancelled)
-        } else {
+    fn check_cancel(&mut self, conn: &dyn Protocol) -> Result<()> {
+        if self.wait_if_paused(conn) {
             Ok(())
+        } else {
+            Err(OmniError::Cancelled)
         }
     }
 
@@ -320,7 +447,7 @@ impl Job<'_> {
         deletes.sort_by_key(|a| std::cmp::Reverse(a.path.matches('/').count()));
 
         for action in others.into_iter().chain(deletes) {
-            self.check_cancel()?;
+            self.check_cancel(conn)?;
             if let Err(e) = self.sync_action(conn, request, action) {
                 self.record_failure(conn, e)?;
             }
@@ -339,7 +466,7 @@ impl Job<'_> {
                     return Err(changed());
                 }
                 ensure_remote_parents(conn, &request.remote_root, &remote)?;
-                conn.upload(&local, &remote, &mut |n| self.on_progress(n))?;
+                conn.upload(&local, &remote, &mut |n| self.on_progress(conn, n))?;
             }
             SyncActionKind::Download => {
                 if !sync::unchanged_since_preview(action.local, sync::local_meta(&local)) {
@@ -348,7 +475,7 @@ impl Job<'_> {
                 if let Some(parent) = local.parent() {
                     std::fs::create_dir_all(parent).map_err(|e| OmniError::io_context(parent.display(), e))?;
                 }
-                conn.download(&remote, &local, &mut |n| self.on_progress(n))?;
+                conn.download(&remote, &local, &mut |n| self.on_progress(conn, n))?;
             }
             SyncActionKind::CreateRemoteDir => {
                 ensure_remote_parents(conn, &request.remote_root, &remote)?;
@@ -409,11 +536,28 @@ impl Job<'_> {
         self.total = local_tree_size(&source)?;
         self.emit(TransferStatus::InProgress, None);
         self.upload_tree(conn, &source, &dest)?;
+        if request.delete_source && self.final_status() == TransferStatus::Completed {
+            self.remove_copied(|path, is_dir| {
+                let path = Path::new(path);
+                let removed = if is_dir { std::fs::remove_dir(path) } else { std::fs::remove_file(path) };
+                removed.map_err(|e| OmniError::io_context(path.display(), e))
+            });
+        }
         Ok(self.final_status())
     }
 
+    /// Removes the copied sources, children first. A folder that holds anything
+    /// not copied (added meanwhile) stays, and is reported.
+    fn remove_copied(&mut self, mut remove: impl FnMut(&str, bool) -> Result<()>) {
+        for (path, is_dir) in std::mem::take(&mut self.copied) {
+            if let Err(e) = remove(&path, is_dir) {
+                self.failures.push(format!("copied, but the source could not be removed: {e}"));
+            }
+        }
+    }
+
     fn upload_tree(&mut self, conn: &dyn Protocol, local: &Path, remote: &str) -> Result<()> {
-        self.check_cancel()?;
+        self.check_cancel(conn)?;
         let meta = std::fs::symlink_metadata(local)
             .map_err(|e| OmniError::io_context(local.display(), e))?;
 
@@ -430,6 +574,7 @@ impl Job<'_> {
                     self.record_failure(conn, e)?;
                 }
             }
+            self.copied.push((local.display().to_string(), true));
             Ok(())
         } else if is_local_dir_link(local) {
             self.skipped_links.push(local.display().to_string());
@@ -438,10 +583,11 @@ impl Job<'_> {
             if self.merge && conn.exists(remote) {
                 self.already_present += 1;
                 self.transferred += meta.len();
-                return Ok(());
+            } else {
+                conn.upload(local, remote, &mut |n| self.on_progress(conn, n))?;
+                self.files_done += 1;
             }
-            conn.upload(local, remote, &mut |n| self.on_progress(n))?;
-            self.files_done += 1;
+            self.copied.push((local.display().to_string(), false));
             Ok(())
         }
     }
@@ -468,11 +614,14 @@ impl Job<'_> {
         self.total = remote_tree_size(conn, &request.source, entry.is_dir, entry.size)?;
         self.emit(TransferStatus::InProgress, None);
         self.download_tree(conn, &request.source, entry.is_dir, &dest)?;
+        if request.delete_source && self.final_status() == TransferStatus::Completed {
+            self.remove_copied(|path, is_dir| if is_dir { conn.remove_empty_dir(path) } else { conn.delete(path) });
+        }
         Ok(self.final_status())
     }
 
     fn download_tree(&mut self, conn: &dyn Protocol, remote: &str, is_dir: bool, local: &Path) -> Result<()> {
-        self.check_cancel()?;
+        self.check_cancel(conn)?;
         if is_dir {
             std::fs::create_dir_all(local).map_err(|e| OmniError::io_context(local.display(), e))?;
             for entry in conn.list_dir(remote)? {
@@ -485,15 +634,17 @@ impl Job<'_> {
                     self.record_failure(conn, e)?;
                 }
             }
+            self.copied.push((remote.to_string(), true));
             Ok(())
         } else {
             if self.merge && local.symlink_metadata().is_ok() {
                 self.already_present += 1;
                 self.transferred += std::fs::metadata(local).map_or(0, |m| m.len());
-                return Ok(());
+            } else {
+                conn.download(remote, local, &mut |n| self.on_progress(conn, n))?;
+                self.files_done += 1;
             }
-            conn.download(remote, local, &mut |n| self.on_progress(n))?;
-            self.files_done += 1;
+            self.copied.push((remote.to_string(), false));
             Ok(())
         }
     }

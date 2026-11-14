@@ -6,6 +6,7 @@ import { useLogStore } from './logs';
 import { useNavHistory, type NavKind } from '../utils/history';
 import { errorMessage, isBackendError } from '../utils/errors';
 import { useTransfersStore } from './transfers';
+import { useEditsStore } from './edits';
 
 export const useConnectionStore = defineStore('connection', () => {
   const connected = ref(false);
@@ -63,6 +64,7 @@ export const useConnectionStore = defineStore('connection', () => {
       logStore.addLog('Error', 'Déconnexion', 'Échec', message);
     } finally {
       useTransfersStore().cancelAllLocally();
+      useEditsStore().reset();
       connected.value = false;
       connecting.value = false;
       profileId.value = null;

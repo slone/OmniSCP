@@ -14,6 +14,8 @@ use crate::protocols::ConnectParams;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Applies to every blocking libssh2 call (handshake, auth, SFTP operations).
 const SESSION_TIMEOUT_MS: u32 = 30_000;
+/// Lets `Protocol::keepalive` send a message when this long has passed without traffic.
+const KEEPALIVE_SECS: u32 = 15;
 
 /// Returns an authenticated session on a server whose identity was checked.
 pub fn open_session(params: &ConnectParams) -> Result<Session> {
@@ -29,6 +31,9 @@ pub fn open_session(params: &ConnectParams) -> Result<Session> {
 
     verify_host_key(&session, params)?;
     authenticate(&session, params)?;
+    // Only sets the interval: messages go out when a paused transfer calls keepalive_send.
+    // Set before the handshake, it breaks the key exchange.
+    session.set_keepalive(false, KEEPALIVE_SECS);
     Ok(session)
 }
 

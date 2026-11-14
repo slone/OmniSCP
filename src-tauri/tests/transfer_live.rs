@@ -96,6 +96,17 @@ impl Harness {
     }
 
     fn enqueue(&mut self, direction: TransferDirection, source: &str, dest_dir: &str, conflict: ConflictStrategy) -> String {
+        self.enqueue_with(direction, source, dest_dir, conflict, false)
+    }
+
+    fn enqueue_with(
+        &mut self,
+        direction: TransferDirection,
+        source: &str,
+        dest_dir: &str,
+        conflict: ConflictStrategy,
+        delete_source: bool,
+    ) -> String {
         self.next_id += 1;
         let id = self.next_id.to_string();
         self.queue
@@ -106,6 +117,7 @@ impl Harness {
                 dest_dir: dest_dir.into(),
                 conflict,
                 dest_name: None,
+                delete_source,
             })
             .unwrap();
         id
@@ -135,7 +147,9 @@ impl Harness {
     fn wait_finished(&self, id: &str) -> TransferEvent {
         loop {
             let event = self.events.recv_timeout(Duration::from_secs(60)).expect("job never finished");
-            if event.id == id && !matches!(event.status, TransferStatus::Pending | TransferStatus::InProgress) {
+            if event.id == id
+                && !matches!(event.status, TransferStatus::Pending | TransferStatus::InProgress | TransferStatus::Paused)
+            {
                 return event;
             }
         }
@@ -149,6 +163,23 @@ impl Harness {
     fn download(&mut self, source: &str, dest_dir: &Path, conflict: ConflictStrategy) -> TransferEvent {
         let id = self.enqueue(TransferDirection::Download, source, dest_dir.to_str().unwrap(), conflict);
         self.wait_finished(&id)
+    }
+
+    /// The next event for `id`, skipping progress reports.
+    fn wait_status(&self, id: &str, status: TransferStatus) -> TransferEvent {
+        loop {
+            let event = self.events.recv_timeout(Duration::from_secs(60)).expect("status never reported");
+            if event.id == id && event.status == status {
+                return event;
+            }
+        }
+    }
+
+    /// Fails if any job reports anything during `wait`.
+    fn assert_quiet(&self, wait: Duration) {
+        if let Ok(event) = self.events.recv_timeout(wait) {
+            panic!("expected no activity, got {:?} for job {}", event.status, event.id);
+        }
     }
 
     fn remote_names(&self, dir: &str) -> Vec<String> {
@@ -643,4 +674,146 @@ fn connection_test_checks_login_and_starting_folder() {
         p.trusted_fingerprint = None;
     });
     assert!(matches!(unknown, Err(OmniError::HostKeyUnknown(_))), "{unknown:?}");
+}
+
+#[test]
+#[ignore]
+fn pausing_holds_jobs_and_keeps_the_session() {
+    let mut h = Harness::new("pause");
+    let base = h.base.clone();
+    let big = h.tmp.join("big.bin");
+    let size = 32 * 1024 * 1024;
+    write(&big, &vec![3u8; size]);
+    let small = h.tmp.join("small.txt");
+    write(&small, b"small");
+    let up = |h: &mut Harness, path: &Path| {
+        h.enqueue(TransferDirection::Upload, path.to_str().unwrap(), &base, ConflictStrategy::Overwrite)
+    };
+
+    // One worker: a paused running job holds it, a paused waiting job is passed over.
+    let a = up(&mut h, &big);
+    let b = up(&mut h, &small);
+    let c = up(&mut h, &small);
+    h.queue.pause(&c);
+    h.wait_status(&a, TransferStatus::InProgress);
+    h.queue.pause(&a);
+    let paused = h.wait_status(&a, TransferStatus::Paused);
+    assert!(paused.transferred_bytes < size as u64);
+    // Longer than the keepalive interval, so the session is pinged mid-transfer.
+    h.assert_quiet(Duration::from_secs(17));
+
+    h.queue.resume(&a);
+    let done = h.wait_finished(&a);
+    assert_eq!(done.status, TransferStatus::Completed, "{:?}", done.error);
+    assert_eq!(h.conn.stat(&format!("{base}/big.bin")).unwrap().size, size as u64);
+    assert_eq!(h.wait_finished(&b).status, TransferStatus::Completed);
+    h.assert_quiet(Duration::from_secs(1));
+    h.queue.resume(&c);
+    assert_eq!(h.wait_finished(&c).status, TransferStatus::Completed);
+
+    // The whole queue: nothing starts until it is released.
+    h.queue.set_paused(true);
+    let d = up(&mut h, &small);
+    h.assert_quiet(Duration::from_secs(1));
+    h.queue.set_paused(false);
+    assert_eq!(h.wait_finished(&d).status, TransferStatus::Completed);
+
+    // A held job can still be cancelled.
+    h.queue.set_paused(true);
+    let e = up(&mut h, &small);
+    h.queue.pause(&e);
+    h.wait_status(&e, TransferStatus::Paused);
+    h.queue.cancel(&e);
+    assert_eq!(h.wait_finished(&e).status, TransferStatus::Cancelled);
+    h.queue.set_paused(false);
+    h.cleanup();
+}
+
+#[test]
+#[ignore]
+fn moving_removes_the_source_only_when_everything_was_copied() {
+    let mut h = Harness::new("move");
+    let base = h.base.clone();
+    let tree = h.tmp.join("tree");
+    write(&tree.join("a.txt"), b"aaa");
+    write(&tree.join("sub/b.txt"), b"bbb");
+
+    let id = h.enqueue_with(TransferDirection::Upload, tree.to_str().unwrap(), &base, ConflictStrategy::Skip, true);
+    assert_eq!(h.wait_finished(&id).status, TransferStatus::Completed);
+    assert!(!tree.exists(), "local source should be gone");
+    assert_eq!(h.remote_names(&format!("{base}/tree/sub")), ["b.txt"]);
+
+    let back = h.tmp.join("back");
+    std::fs::create_dir_all(&back).unwrap();
+    let id = h.enqueue_with(TransferDirection::Download, &format!("{base}/tree"), back.to_str().unwrap(), ConflictStrategy::Skip, true);
+    assert_eq!(h.wait_finished(&id).status, TransferStatus::Completed);
+    assert!(!h.conn.exists(&format!("{base}/tree")), "remote source should be gone");
+    assert_eq!(std::fs::read(back.join("tree/sub/b.txt")).unwrap(), b"bbb");
+
+    // One unreadable file: the copy is partial, so nothing at all is removed.
+    let partial = h.tmp.join("partial");
+    write(&partial.join("ok.txt"), b"ok");
+    write(&partial.join("locked.txt"), b"locked");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(partial.join("locked.txt"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let id = h.enqueue_with(TransferDirection::Upload, partial.to_str().unwrap(), &base, ConflictStrategy::Skip, true);
+    let event = h.wait_finished(&id);
+    std::fs::set_permissions(partial.join("locked.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(event.status, TransferStatus::CompletedWithWarnings);
+    assert!(partial.join("ok.txt").exists() && partial.join("locked.txt").exists());
+    h.cleanup();
+}
+
+#[test]
+#[ignore]
+fn editing_sends_saves_back_and_detects_changes_on_the_server() {
+    use omniscp_lib::edit::Edits;
+
+    let h = Harness::new("edit");
+    let base = h.base.clone();
+    let remote = format!("{base}/notes.txt");
+    let seed = h.tmp.join("seed.txt");
+    write(&seed, b"version 1");
+    h.conn.upload(&seed, &remote, &mut |_| true).unwrap();
+    let conn = h.conn.as_ref();
+
+    let edits = Edits::default();
+    let root = h.tmp.join("edits");
+    let info = edits.open(conn, &remote, &root, "e1".into()).unwrap();
+    let local = PathBuf::from(&info.local_path);
+    assert_eq!(std::fs::read(&local).unwrap(), b"version 1");
+    // Opening it again reuses the copy, so nothing unsent is lost.
+    assert_eq!(edits.open(conn, &remote, &root, "e2".into()).unwrap().id, "e1");
+    assert!(edits.open(conn, &base, &root, "e3".into()).is_err(), "a folder cannot be edited");
+    assert!(edits.poll().is_empty());
+
+    // A save is reported once it stayed the same for one look.
+    std::fs::write(&local, b"version 2, longer").unwrap();
+    assert!(edits.poll().is_empty());
+    let changed = edits.poll();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].remote_path, remote);
+    assert!(edits.poll().is_empty());
+    edits.upload(conn, "e1", false).unwrap();
+    let back = h.tmp.join("back.txt");
+    conn.download(&remote, &back, &mut |_| true).unwrap();
+    assert_eq!(std::fs::read(&back).unwrap(), b"version 2, longer");
+
+    // Someone else changes the server's copy: the next save is held back.
+    write(&seed, b"their version");
+    conn.upload(&seed, &remote, &mut |_| true).unwrap();
+    std::fs::write(&local, b"version 3").unwrap();
+    assert!(matches!(edits.upload(conn, "e1", false), Err(OmniError::Conflict(_))));
+    edits.upload(conn, "e1", true).unwrap();
+    conn.download(&remote, &back, &mut |_| true).unwrap();
+    assert_eq!(std::fs::read(&back).unwrap(), b"version 3");
+
+    // Deleted on the server: also a conflict, never silently recreated.
+    conn.delete(&remote).unwrap();
+    assert!(matches!(edits.upload(conn, "e1", false), Err(OmniError::Conflict(_))));
+
+    edits.stop("e1");
+    assert!(edits.upload(conn, "e1", true).is_err());
+    assert!(local.exists(), "the local copy is kept");
+    h.cleanup();
 }

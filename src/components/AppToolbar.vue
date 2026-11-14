@@ -186,6 +186,24 @@ function onDisconnect() {
       </button>
       <button
         class="toolbar-btn"
+        title="Déplacer la sélection du panneau actif vers l'autre : copie, puis suppression de l'original (F6)"
+        :disabled="!actions.canMove"
+        @click="actions.requestMove()"
+      >
+        <span class="icon">&#8669;</span>
+        Déplacer
+      </button>
+      <button
+        class="toolbar-btn"
+        title="Ouvrir le fichier distant dans une application locale ; chaque enregistrement est renvoyé (F4)"
+        :disabled="!actions.canEdit"
+        @click="actions.requestEdit"
+      >
+        <span class="icon">&#128221;</span>
+        Éditer
+      </button>
+      <button
+        class="toolbar-btn"
         title="Comparer et synchroniser le dossier local et le dossier distant affichés"
         :disabled="!connectionStore.connected || !connectionStore.currentPath || !localFiles.currentPath"
         @click="showSync = true"

@@ -50,6 +50,7 @@ onMounted(() => {
         @rename="actions.requestRename"
         @delete="actions.requestDelete"
         @transfer="actions.transfer('local')"
+        @move="actions.requestMove('local')"
         @drop="onDrop"
       />
     </div>
@@ -78,6 +79,8 @@ onMounted(() => {
           @rename="actions.requestRename"
           @delete="actions.requestDelete"
           @transfer="actions.transfer('remote')"
+          @move="actions.requestMove('remote')"
+          @edit="actions.requestEdit"
           @drop="onDrop"
         />
       </template>

@@ -12,6 +12,8 @@ pub enum TransferDirection {
 pub enum TransferStatus {
     Pending,
     InProgress,
+    /// Held by the user, alone or with the whole queue; a running job keeps its session.
+    Paused,
     Completed,
     /// Part of a folder went through; some items failed or were left out.
     CompletedWithWarnings,

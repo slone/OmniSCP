@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod config;
+pub mod edit;
 pub mod error;
 pub mod logging;
 pub mod protocols;
@@ -15,6 +16,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(ConnectionState::default())
+        .setup(|app| {
+            use tauri::Manager;
+            if let Ok(cache) = app.path().app_cache_dir() {
+                edit::clean_old(&cache.join(commands::EDITS_DIR));
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_home_dir,
             commands::get_parent_dir,
@@ -33,6 +41,12 @@ pub fn run() {
             commands::delete_local,
             commands::enqueue_transfer,
             commands::cancel_transfer,
+            commands::pause_transfer,
+            commands::resume_transfer,
+            commands::set_queue_paused,
+            commands::edit_remote_file,
+            commands::upload_edited_file,
+            commands::stop_editing,
             commands::compare_sync,
             commands::cancel_sync_compare,
             commands::start_sync,

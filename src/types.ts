@@ -57,6 +57,7 @@ export type TransferDirection = 'Upload' | 'Download';
 export type TransferStatus =
   | 'Pending'
   | 'InProgress'
+  | 'Paused'
   | 'Completed'
   | 'CompletedWithWarnings'
   | 'Skipped'
@@ -157,4 +158,11 @@ export interface ProbeResult {
   initial_path: string;
   /// The login worked but the starting folder could not be listed.
   directory_error: string | null;
+}
+
+/// A remote file open in a local application (src-tauri/src/edit.rs).
+export interface EditInfo {
+  id: string;
+  remote_path: string;
+  local_path: string;
 }

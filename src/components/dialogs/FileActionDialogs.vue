@@ -4,8 +4,16 @@ import InputDialog from './InputDialog.vue';
 import ConfirmDeleteDialog from './ConfirmDeleteDialog.vue';
 import ConflictDialog from './ConflictDialog.vue';
 import PropertiesDialog from './PropertiesDialog.vue';
+import ConfirmMoveDialog from './ConfirmMoveDialog.vue';
 
 const actions = useFileActionsStore();
+
+function onMove() {
+  const dialog = actions.dialog;
+  if (dialog?.type !== 'move') return;
+  actions.closeDialog();
+  actions.transfer(dialog.side, dialog.entries, true);
+}
 </script>
 
 <template>
@@ -39,6 +47,14 @@ const actions = useFileActionsStore();
       :side="actions.dialog.side"
       :entries="actions.dialog.entries"
       @close="actions.closeDialog"
+    />
+    <ConfirmMoveDialog
+      v-else-if="actions.dialog.type === 'move'"
+      :entries="actions.dialog.entries"
+      :side="actions.dialog.side"
+      :dest-dir="actions.dialog.destDir"
+      @confirm="onMove"
+      @cancel="actions.closeDialog"
     />
     <ConflictDialog
       v-else-if="actions.dialog.type === 'conflict'"

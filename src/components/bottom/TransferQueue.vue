@@ -9,6 +9,7 @@ function statusLabel(status: string): string {
   const map: Record<string, string> = {
     Pending: 'En attente',
     InProgress: 'En cours',
+    Paused: 'En pause',
     Completed: 'Terminé',
     CompletedWithWarnings: 'Terminé avec avertissements',
     Skipped: 'Ignoré',
@@ -25,7 +26,17 @@ function progressPercent(job: QueuedTransfer): number {
 }
 
 function canCancel(job: QueuedTransfer): boolean {
+  return job.status === 'Pending' || job.status === 'InProgress' || job.status === 'Paused';
+}
+
+function canPause(job: QueuedTransfer): boolean {
   return job.status === 'Pending' || job.status === 'InProgress';
+}
+
+function directionTitle(job: QueuedTransfer): string {
+  if (job.direction === 'Sync') return 'Synchronisation';
+  const way = job.direction === 'Upload' ? 'vers le serveur' : 'depuis le serveur';
+  return job.delete_source ? `Déplacement ${way} : la source est supprimée une fois tout copié` : `Copie ${way}`;
 }
 </script>
 
@@ -33,7 +44,19 @@ function canCancel(job: QueuedTransfer): boolean {
   <div class="transfer-queue">
     <div class="queue-toolbar">
       <span class="queue-count">{{ transfers.active.length }} en cours</span>
+      <span v-if="transfers.queuePaused" class="queue-paused" role="status">
+        File en pause : aucun transfert ne démarre ni n'avance
+      </span>
       <div class="queue-spacer" />
+      <button
+        class="queue-btn"
+        :class="{ 'queue-btn-on': transfers.queuePaused }"
+        :aria-pressed="transfers.queuePaused"
+        :title="transfers.queuePaused ? 'Reprendre tous les transferts' : 'Suspendre tous les transferts, y compris ceux en cours'"
+        @click="transfers.setQueuePaused(!transfers.queuePaused)"
+      >
+        {{ transfers.queuePaused ? '▶ Tout reprendre' : '⏸ Tout suspendre' }}
+      </button>
       <button
         class="queue-btn"
         :disabled="!transfers.jobs.some(transfers.canRetry)"
@@ -63,7 +86,8 @@ function canCancel(job: QueuedTransfer): boolean {
       <tbody>
         <tr v-for="job in transfers.jobs" :key="job.id" class="queue-row">
           <td>
-            <span class="direction-icon">{{ directionIcon[job.direction] }}</span>
+            <span class="direction-icon" :title="directionTitle(job)">{{ directionIcon[job.direction] }}</span>
+            <span v-if="job.delete_source" class="move-mark" :title="directionTitle(job)">déplacer</span>
           </td>
           <td class="path-cell" :title="job.source">{{ job.source }}</td>
           <td class="path-cell" :title="job.destination">{{ job.destination }}</td>
@@ -84,8 +108,26 @@ function canCancel(job: QueuedTransfer): boolean {
               {{ statusLabel(job.status) }}
             </span>
           </td>
-          <td>
-            <button v-if="canCancel(job)" class="queue-btn" title="Annuler" @click="transfers.cancel(job.id)">
+          <td class="row-actions">
+            <button
+              v-if="canPause(job)"
+              class="queue-btn"
+              title="Mettre en pause : un transfert en cours s'arrête entre deux blocs, sa connexion reste ouverte"
+              aria-label="Mettre en pause"
+              @click="transfers.pause(job.id)"
+            >
+              ⏸
+            </button>
+            <button
+              v-else-if="job.status === 'Paused'"
+              class="queue-btn"
+              title="Reprendre"
+              aria-label="Reprendre"
+              @click="transfers.resume(job.id)"
+            >
+              ▶
+            </button>
+            <button v-if="canCancel(job)" class="queue-btn" title="Annuler" aria-label="Annuler" @click="transfers.cancel(job.id)">
               ✕
             </button>
             <button
@@ -200,6 +242,37 @@ function canCancel(job: QueuedTransfer): boolean {
 .status-inprogress {
   background: var(--bg-info);
   color: var(--color-info);
+}
+
+.status-paused {
+  background: var(--bg-neutral);
+  color: var(--color-text);
+}
+
+.row-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.move-mark {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--bg-info);
+  color: var(--color-info);
+  font-size: 10px;
+}
+
+.queue-paused {
+  padding: 0 6px;
+  border-radius: 3px;
+  background: var(--bg-warning);
+  color: var(--color-warning);
+}
+
+.queue-btn-on {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
 }
 
 .status-pending {

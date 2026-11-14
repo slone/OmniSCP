@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use tauri::{Emitter, Manager};
 
+use crate::edit::{self, EditInfo, Edits};
 use crate::config::{AppConfig, AuthMethod, Profile, credentials, exchange};
 use crate::error::OmniError;
 use crate::logging::{self, LogEntry};
@@ -28,6 +29,8 @@ pub struct ActiveConnection {
     cancel_size: Arc<AtomicBool>,
     /// Read once at connection, to show owners by name.
     names: Arc<AccountNames>,
+    /// Remote files open in local applications; their watcher stops when this is dropped.
+    edits: Arc<Edits>,
 }
 
 impl ActiveConnection {
@@ -381,6 +384,8 @@ pub async fn connect(
 
     // Connect outside the lock so other commands stay responsive and a failed
     // attempt leaves the current connection untouched.
+    let edits = Arc::new(Edits::default());
+    watch_edits(app_handle.clone(), Arc::downgrade(&edits));
     let sink: EventSink = Arc::new(move |event| {
         let _ = app_handle.emit(PROGRESS_EVENT, event);
     });
@@ -400,6 +405,7 @@ pub async fn connect(
                 cancel_compare: Arc::default(),
                 cancel_size: Arc::default(),
                 names,
+                edits,
             },
             initial_path,
         ))
@@ -444,6 +450,73 @@ pub async fn test_connection(
         trusted_fingerprint,
     };
     run_blocking(move || probe(&params)).await
+}
+
+/// Reports saved local copies until the connection that owns `edits` is gone.
+fn watch_edits(app_handle: tauri::AppHandle, edits: std::sync::Weak<Edits>) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(edit::POLL_INTERVAL);
+            let Some(edits) = edits.upgrade() else { break };
+            for change in edits.poll() {
+                let _ = app_handle.emit(edit::CHANGED_EVENT, change);
+            }
+        }
+    });
+}
+
+/// Under the app's cache folder.
+pub const EDITS_DIR: &str = "edits";
+
+fn active_edits(state: &ConnectionState) -> Result<Arc<Edits>, OmniError> {
+    let guard = lock(&state.0)?;
+    let active = guard
+        .as_ref()
+        .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+    Ok(Arc::clone(&active.edits))
+}
+
+/// Downloads a remote file and opens it with the system's default application.
+/// Each save is reported with `remote-edit-changed`; `upload_edited_file` sends it.
+#[tauri::command]
+pub async fn edit_remote_file(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, ConnectionState>,
+    path: String,
+) -> Result<EditInfo, OmniError> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let root = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|e| OmniError::Config(e.to_string()))?
+        .join(EDITS_DIR);
+    let edits = active_edits(&state)?;
+    let info = with_connection(&state, move |conn| edits.open(conn, &path, &root, generate_id())).await?;
+    app_handle
+        .opener()
+        .open_path(&info.local_path, None::<&str>)
+        .map_err(|e| OmniError::Config(format!("No application could open {}: {e}", info.local_path)))?;
+    Ok(info)
+}
+
+/// `force`: send even if the server's copy changed since it was opened.
+#[tauri::command]
+pub async fn upload_edited_file(
+    state: tauri::State<'_, ConnectionState>,
+    id: String,
+    force: bool,
+) -> Result<(), OmniError> {
+    let edits = active_edits(&state)?;
+    with_connection(&state, move |conn| edits.upload(conn, &id, force)).await
+}
+
+#[tauri::command]
+pub fn stop_editing(state: tauri::State<'_, ConnectionState>, id: String) -> Result<(), OmniError> {
+    if let Ok(edits) = active_edits(&state) {
+        edits.stop(&id);
+    }
+    Ok(())
 }
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -615,6 +688,7 @@ pub fn enqueue_transfer(
     dest_dir: String,
     conflict: ConflictStrategy,
     dest_name: Option<String>,
+    delete_source: Option<bool>,
 ) -> Result<String, OmniError> {
     if let Some(name) = &dest_name {
         validate_file_name(name)?;
@@ -631,6 +705,7 @@ pub fn enqueue_transfer(
         dest_dir,
         conflict,
         dest_name,
+        delete_source: delete_source.unwrap_or(false),
     })?;
     Ok(id)
 }
@@ -639,6 +714,31 @@ pub fn enqueue_transfer(
 pub fn cancel_transfer(state: tauri::State<'_, ConnectionState>, id: String) -> Result<(), OmniError> {
     if let Some(active) = lock(&state.0)?.as_ref() {
         active.transfers.cancel(&id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pause_transfer(state: tauri::State<'_, ConnectionState>, id: String) -> Result<(), OmniError> {
+    if let Some(active) = lock(&state.0)?.as_ref() {
+        active.transfers.pause(&id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn resume_transfer(state: tauri::State<'_, ConnectionState>, id: String) -> Result<(), OmniError> {
+    if let Some(active) = lock(&state.0)?.as_ref() {
+        active.transfers.resume(&id);
+    }
+    Ok(())
+}
+
+/// Holds or releases the whole queue, running transfers included.
+#[tauri::command]
+pub fn set_queue_paused(state: tauri::State<'_, ConnectionState>, paused: bool) -> Result<(), OmniError> {
+    if let Some(active) = lock(&state.0)?.as_ref() {
+        active.transfers.set_paused(paused);
     }
     Ok(())
 }
