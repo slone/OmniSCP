@@ -45,6 +45,10 @@ const emit = defineEmits<{
   rename: [];
   delete: [];
   transfer: [];
+  /// Copy to the other pane, then remove the source.
+  move: [];
+  /// Open in a local application (remote files).
+  edit: [];
   /// Files dragged from the other pane were dropped here.
   drop: [from: PaneSide, paths: string[]];
 }>();
@@ -174,6 +178,12 @@ function onListKeydown(e: KeyboardEvent) {
   } else if (e.key === 'F5') {
     e.preventDefault();
     emit('transfer');
+  } else if (e.key === 'F6') {
+    e.preventDefault();
+    emit('move');
+  } else if (e.key === 'F4') {
+    e.preventDefault();
+    emit('edit');
   } else if (e.key === 'F7') {
     e.preventDefault();
     emit('mkdir');

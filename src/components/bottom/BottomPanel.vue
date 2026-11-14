@@ -1,9 +1,22 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import TransferQueue from './TransferQueue.vue';
 import LogsPanel from './LogsPanel.vue';
+import EditsPanel from './EditsPanel.vue';
+import { useEditsStore } from '../../stores/edits';
 
-const activeTab = ref<'queue' | 'logs'>('queue');
+const edits = useEditsStore();
+const activeTab = ref<'queue' | 'logs' | 'edits'>('queue');
+
+// A refused save must not go unnoticed.
+watch(() => edits.attention, () => (activeTab.value = 'edits'));
+watch(
+  () => edits.files.length,
+  (count, before) => {
+    if (count > before) activeTab.value = 'edits';
+    else if (count === 0 && activeTab.value === 'edits') activeTab.value = 'queue';
+  },
+);
 </script>
 
 <template>
@@ -21,17 +34,35 @@ const activeTab = ref<'queue' | 'logs'>('queue');
       >
         Journal
       </button>
+      <button
+        v-if="edits.files.length > 0"
+        :class="['tab-btn', { active: activeTab === 'edits' }]"
+        @click="activeTab = 'edits'"
+      >
+        En édition ({{ edits.files.length }})
+        <span v-if="edits.files.some((f) => f.state === 'conflict' || f.state === 'error')" class="tab-alert" aria-label="à vérifier">!</span>
+      </button>
       <div class="tab-spacer" />
     </div>
 
     <div class="panel-content">
       <TransferQueue v-if="activeTab === 'queue'" />
       <LogsPanel v-if="activeTab === 'logs'" />
+      <EditsPanel v-if="activeTab === 'edits'" />
     </div>
   </div>
 </template>
 
 <style scoped>
+.tab-alert {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--color-danger-solid);
+  color: var(--color-on-accent);
+  font-size: 10px;
+}
+
 .bottom-panel {
   display: flex;
   flex-direction: column;

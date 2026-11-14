@@ -14,6 +14,8 @@ export interface QueuedTransfer extends Omit<TransferJob, 'direction'> {
   dest_dir: string;
   /// A retry must go to the same server.
   profile_id: string | null;
+  /// Move: the source is removed once everything is copied.
+  delete_source: boolean;
   error?: string;
 }
 
@@ -22,6 +24,8 @@ const RETRYABLE = new Set(['CompletedWithWarnings', 'Cancelled', 'Failed']);
 
 export const useTransfersStore = defineStore('transfers', () => {
   const jobs = ref<QueuedTransfer[]>([]);
+  /// The whole queue is held; reset by a new connection, which starts a new queue.
+  const queuePaused = ref(false);
   let listening = false;
   // Events can arrive before enqueue_transfer resolves (fast jobs); keep the latest per id.
   const early = new Map<string, TransferEvent>();
@@ -56,7 +60,8 @@ export const useTransfersStore = defineStore('transfers', () => {
 
   function onFinished(job: QueuedTransfer) {
     const logStore = useLogStore();
-    const action = job.direction === 'Sync' ? 'Synchronisation' : job.direction;
+    const action =
+      job.direction === 'Sync' ? 'Synchronisation' : job.delete_source ? `Déplacement (${job.direction})` : job.direction;
     switch (job.status) {
       case 'Completed':
         logStore.addLog('Info', action, 'OK', `${job.source} → ${job.destination}`);
@@ -88,6 +93,11 @@ export const useTransfersStore = defineStore('transfers', () => {
     if (wroteFiles && pane.currentPath === job.dest_dir) {
       pane.refresh();
     }
+    // A move removes its source: show that on the other pane.
+    if (job.delete_source && wroteFiles) {
+      const source = job.direction === 'Upload' ? useLocalFilesStore() : useConnectionStore();
+      if (source.files.some((f) => f.path === job.source)) source.refresh();
+    }
   }
 
   async function enqueue(
@@ -96,6 +106,7 @@ export const useTransfersStore = defineStore('transfers', () => {
     destDir: string,
     conflict: ConflictStrategy,
     destName?: string,
+    deleteSource = false,
   ) {
     await ensureListener();
     try {
@@ -105,8 +116,9 @@ export const useTransfersStore = defineStore('transfers', () => {
         destDir,
         conflict,
         destName,
+        deleteSource,
       });
-      track(id, direction, source, destDir, conflict);
+      track(id, direction, source, destDir, conflict, deleteSource);
       return true;
     } catch (err) {
       useLogStore().addLog('Error', direction, 'Échec', `${source} — ${errorMessage(err)}`);
@@ -118,7 +130,7 @@ export const useTransfersStore = defineStore('transfers', () => {
     await ensureListener();
     try {
       const id = await invoke<string>('start_sync', { localRoot, remoteRoot, actions });
-      track(id, 'Sync', localRoot, remoteRoot, 'Overwrite');
+      track(id, 'Sync', localRoot, remoteRoot, 'Overwrite', false);
     } catch (err) {
       useLogStore().addLog('Error', 'Synchronisation', 'Échec', `${localRoot} — ${errorMessage(err)}`);
     }
@@ -130,6 +142,7 @@ export const useTransfersStore = defineStore('transfers', () => {
     source: string,
     destDir: string,
     conflict: ConflictStrategy,
+    deleteSource: boolean,
   ) {
     jobs.value.push({
       id,
@@ -142,6 +155,7 @@ export const useTransfersStore = defineStore('transfers', () => {
       total_bytes: 0,
       transferred_bytes: 0,
       conflict_strategy: conflict,
+      delete_source: deleteSource,
     });
     const buffered = early.get(id);
     if (buffered) {
@@ -171,7 +185,7 @@ export const useTransfersStore = defineStore('transfers', () => {
       destName === undefined || job.conflict_strategy === 'Overwrite'
         ? job.conflict_strategy
         : 'Merge';
-    if (await enqueue(job.direction, job.source, job.dest_dir, strategy, destName)) {
+    if (await enqueue(job.direction, job.source, job.dest_dir, strategy, destName, job.delete_source)) {
       jobs.value = jobs.value.filter((j) => j.id !== job.id);
     }
   }
@@ -186,12 +200,31 @@ export const useTransfersStore = defineStore('transfers', () => {
     await invoke('cancel_transfer', { id });
   }
 
+  async function pause(id: string) {
+    await invoke('pause_transfer', { id });
+  }
+
+  async function resume(id: string) {
+    await invoke('resume_transfer', { id });
+  }
+
+  async function setQueuePaused(paused: boolean) {
+    try {
+      await invoke('set_queue_paused', { paused });
+      queuePaused.value = paused;
+      useLogStore().addLog('Info', "File d'attente", paused ? 'En pause' : 'Reprise', paused ? 'Transferts suspendus' : 'Transferts repris');
+    } catch (err) {
+      useLogStore().addLog('Error', "File d'attente", 'Échec', errorMessage(err));
+    }
+  }
+
   function clearFinished() {
     jobs.value = jobs.value.filter((j) => !FINISHED.has(j.status));
   }
 
   /// The backend drops its queue on disconnect; mirror that here.
   function cancelAllLocally() {
+    queuePaused.value = false;
     for (const job of jobs.value) {
       if (!FINISHED.has(job.status)) job.status = 'Cancelled';
     }
@@ -200,6 +233,10 @@ export const useTransfersStore = defineStore('transfers', () => {
   return {
     jobs,
     active,
+    queuePaused,
+    pause,
+    resume,
+    setQueuePaused,
     enqueue,
     enqueueSync,
     canRetry,

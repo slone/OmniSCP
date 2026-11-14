@@ -13,6 +13,8 @@ pub enum OmniError {
     HostKeyUnknown(String),
     /// Server key differs from the one recorded in known_hosts; carries the received fingerprint.
     HostKeyMismatch(String),
+    /// The target changed since the user last saw it; the operation was not done.
+    Conflict(String),
     /// Operation stopped at the user's request.
     Cancelled,
     /// The session died; the user has to connect again.
@@ -33,6 +35,7 @@ impl Serialize for OmniError {
             OmniError::Config(_) => "Config",
             OmniError::HostKeyUnknown(_) => "HostKeyUnknown",
             OmniError::HostKeyMismatch(_) => "HostKeyMismatch",
+            OmniError::Conflict(_) => "Conflict",
             OmniError::Cancelled => "Cancelled",
             OmniError::ConnectionLost => "ConnectionLost",
             OmniError::Io(_) => "Io",
@@ -62,6 +65,7 @@ impl fmt::Display for OmniError {
                 f,
                 "Host key mismatch: the server presented {fp}, which differs from the recorded key"
             ),
+            OmniError::Conflict(msg) => write!(f, "{msg}"),
             OmniError::Cancelled => write!(f, "Cancelled"),
             OmniError::ConnectionLost => write!(f, "Connection to the server was lost"),
             OmniError::Io(err) => write!(f, "I/O error: {err}"),

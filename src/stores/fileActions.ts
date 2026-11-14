@@ -7,6 +7,7 @@ import { useLocalFilesStore } from './localFiles';
 import { useConnectionStore } from './connection';
 import { useTransfersStore } from './transfers';
 import { useSettingsStore } from './settings';
+import { useEditsStore } from './edits';
 import { errorMessage } from '../utils/errors';
 
 export type FileDialog =
@@ -14,6 +15,7 @@ export type FileDialog =
   | { type: 'rename'; side: PaneSide; entry: FileEntry }
   | { type: 'delete'; side: PaneSide; entries: FileEntry[] }
   | { type: 'properties'; side: PaneSide; entries: FileEntry[] }
+  | { type: 'move'; side: PaneSide; entries: FileEntry[]; destDir: string }
   | { type: 'conflict'; name: string; remaining: number };
 
 export type ConflictChoice = Exclude<ConflictStrategy, 'Ask' | 'Merge'> | 'Cancel';
@@ -45,6 +47,26 @@ export const useFileActionsStore = defineStore('fileActions', () => {
   const canShowProperties = canDelete;
   const canUpload = computed(() => connected.value && selectionOf('local').length > 0);
   const canDownload = computed(() => connected.value && selectionOf('remote').length > 0);
+  const canMove = computed(() => connected.value && activeSelection.value.length > 0);
+  const canEdit = computed(
+    () =>
+      connected.value &&
+      activePane.value === 'remote' &&
+      activeSelection.value.length === 1 &&
+      !activeSelection.value[0].is_dir,
+  );
+
+  /// Move = copy to the other pane, then remove the source; asked first.
+  function requestMove(side: PaneSide = activePane.value) {
+    const entries = selectionOf(side);
+    if (!connected.value || entries.length === 0) return;
+    const destDir = pane(side === 'local' ? 'remote' : 'local').currentPath;
+    dialog.value = { type: 'move', side, entries, destDir };
+  }
+
+  function requestEdit() {
+    if (canEdit.value) useEditsStore().open(activeSelection.value[0]);
+  }
 
   function requestMkdir() {
     if (canMkdir.value) dialog.value = { type: 'mkdir', side: activePane.value };
@@ -152,7 +174,7 @@ export const useFileActionsStore = defineStore('fileActions', () => {
 
   /// Queues the selection of `from` into the current directory of the other pane,
   /// asking what to do for names that already exist there.
-  async function transfer(from: PaneSide, entries: FileEntry[] = selectionOf(from)) {
+  async function transfer(from: PaneSide, entries: FileEntry[] = selectionOf(from), move = false) {
     if (!connected.value || entries.length === 0) return;
     const to: PaneSide = from === 'local' ? 'remote' : 'local';
     const destDir = pane(to).currentPath;
@@ -179,7 +201,7 @@ export const useFileActionsStore = defineStore('fileActions', () => {
         }
       }
       // Skip still goes to the backend: it re-checks, since the listing may be stale.
-      await transfers.enqueue(direction, entry.path, destDir, strategy);
+      await transfers.enqueue(direction, entry.path, destDir, strategy, undefined, move);
     }
   }
 
@@ -204,5 +226,9 @@ export const useFileActionsStore = defineStore('fileActions', () => {
     remove,
     answerConflict,
     transfer,
+    canMove,
+    requestMove,
+    canEdit,
+    requestEdit,
   };
 });

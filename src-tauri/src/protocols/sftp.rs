@@ -123,6 +123,12 @@ impl Protocol for SftpConnection {
         Ok(())
     }
 
+    fn keepalive(&self) {
+        if let Some(session) = &self.session {
+            let _ = session.keepalive_send();
+        }
+    }
+
     fn is_alive(&self) -> bool {
         self.realpath(".").is_ok()
     }

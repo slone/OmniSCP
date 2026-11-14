@@ -341,6 +341,8 @@ pub trait Protocol: Send + Sync {
     fn disconnect(&mut self) -> Result<()>;
     /// Asks the server, so this can block; a session can die without any local sign.
     fn is_alive(&self) -> bool;
+    /// Tells the server the idle session is still wanted. Never fails: a dead session shows on the next call.
+    fn keepalive(&self) {}
     /// The absolute form of a folder's path; `.` gives the initial folder.
     fn realpath(&self, path: &str) -> Result<String>;
     fn list_dir(&self, path: &str) -> Result<Vec<FileEntry>>;

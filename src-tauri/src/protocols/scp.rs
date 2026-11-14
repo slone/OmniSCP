@@ -207,6 +207,12 @@ impl Protocol for ScpConnection {
         Ok(())
     }
 
+    fn keepalive(&self) {
+        if let Some(session) = &self.session {
+            let _ = session.keepalive_send();
+        }
+    }
+
     fn is_alive(&self) -> bool {
         self.run("true").is_ok_and(|output| output.success)
     }

@@ -10,6 +10,7 @@ export type BackendErrorKind =
   | 'HostKeyUnknown'
   | 'HostKeyMismatch'
   | 'ConnectionLost'
+  | 'Conflict'
   | 'Cancelled'
   | 'Io';
 
