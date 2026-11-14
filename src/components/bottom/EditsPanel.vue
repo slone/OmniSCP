@@ -1,20 +1,20 @@
 <script setup lang="ts">
 import { useEditsStore, type EditedFile } from '../../stores/edits';
+import { formatTime } from '../../utils/format';
+import { t } from '../../i18n';
 
 const edits = useEditsStore();
 
 function stateLabel(file: EditedFile) {
   switch (file.state) {
     case 'sending':
-      return 'Envoi…';
+      return t.edits.sending;
     case 'conflict':
-      return 'Modifié sur le serveur';
+      return t.edits.conflict;
     case 'error':
-      return 'Échec de l’envoi';
+      return t.edits.error;
     default:
-      return file.sentAt
-        ? `Envoyé à ${new Date(file.sentAt).toLocaleTimeString('fr-FR')}`
-        : 'Surveillé — enregistrez pour envoyer';
+      return file.sentAt ? t.edits.sentAt(formatTime(file.sentAt)) : t.edits.watching;
   }
 }
 </script>
@@ -22,31 +22,34 @@ function stateLabel(file: EditedFile) {
 <template>
   <div class="edits">
     <p class="hint">
-      Chaque enregistrement dans l’application est envoyé sur le serveur, sauf si le fichier y a changé entre-temps.
+      {{ t.edits.hint }}
     </p>
     <table class="edits-table">
       <tbody>
         <tr v-for="file in edits.files" :key="file.id" :class="'state-' + file.state">
           <td class="path" :title="file.local_path">{{ file.remote_path }}</td>
-          <td class="state" :title="file.error">{{ stateLabel(file) }}</td>
+          <td class="state" role="status">
+            {{ stateLabel(file) }}
+            <div v-if="file.error" class="state-error">{{ file.error }}</div>
+          </td>
           <td class="actions">
             <template v-if="file.state === 'conflict'">
-              <button class="edit-btn danger" title="Remplacer la version du serveur par la vôtre" @click="edits.send(file.id, true)">
-                Écraser
+              <button class="edit-btn danger" :title="t.edits.overwriteHint" @click="edits.send(file.id, true)">
+                {{ t.edits.overwrite }}
               </button>
-              <button class="edit-btn" title="Ne pas envoyer cette modification" @click="edits.dismiss(file.id)">Ignorer</button>
+              <button class="edit-btn" :title="t.edits.dismissHint" @click="edits.dismiss(file.id)">{{ t.edits.dismiss }}</button>
             </template>
             <button
               v-else
               class="edit-btn"
-              title="Envoyer la copie locale maintenant"
+:title="t.edits.sendHint"
               :disabled="file.state === 'sending'"
               @click="edits.send(file.id, false)"
             >
-              Envoyer
+              {{ t.edits.send }}
             </button>
-            <button class="edit-btn" title="Ne plus surveiller ce fichier ; la copie locale est conservée" @click="edits.stop(file.id)">
-              Arrêter
+            <button class="edit-btn" :title="t.edits.stopHint" @click="edits.stop(file.id)">
+              {{ t.edits.stop }}
             </button>
           </td>
         </tr>
@@ -90,6 +93,11 @@ function stateLabel(file: EditedFile) {
 
 .state {
   color: var(--color-text-muted);
+}
+
+.state-error {
+  white-space: normal;
+  font-size: 11px;
 }
 
 .state-conflict .state,

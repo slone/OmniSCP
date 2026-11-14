@@ -8,7 +8,9 @@ import { useLogStore } from '../../stores/logs';
 import { useTransfersStore } from '../../stores/transfers';
 import { errorMessage, isBackendError } from '../../utils/errors';
 import { formatDate, formatSize } from '../../utils/format';
-import type { EntryMeta, SyncAction, SyncActionKind, SyncMode, SyncPlan, SyncReason } from '../../types';
+import type { EntryMeta, SyncAction, SyncActionKind, SyncMode, SyncPlan } from '../../types';
+import type { BackendError } from '../../utils/errors';
+import { t } from '../../i18n';
 
 const emit = defineEmits<{ close: [] }>();
 
@@ -30,28 +32,9 @@ const mode = ref<SyncMode>('Upload');
 const excludesText = ref('');
 const deleteOrphans = ref(false);
 const rows = ref<PlanRow[]>([]);
-const problems = ref<string[]>([]);
+const problems = ref<BackendError[]>([]);
 const skippedLinks = ref<string[]>([]);
 const error = ref('');
-
-const kindLabels: Record<SyncActionKind, string> = {
-  Upload: '↑ Envoyer',
-  Download: '↓ Récupérer',
-  CreateRemoteDir: '📁 Créer sur le serveur',
-  CreateLocalDir: '📁 Créer en local',
-  DeleteRemote: '🗑 Supprimer sur le serveur',
-  DeleteLocal: '🗑 Supprimer en local',
-  Conflict: '⚠ Conflit',
-};
-
-const reasonLabels: Record<SyncReason, string> = {
-  New: 'nouveau',
-  SourceNewer: 'plus récent',
-  TargetNewer: 'la destination est plus récente',
-  SameDateDifferentSize: 'même date, taille différente',
-  TypeMismatch: "fichier d'un côté, dossier de l'autre",
-  Orphan: 'absent de la source',
-};
 
 // The same box would delete on the other side after a change of direction.
 watch(mode, () => {
@@ -80,7 +63,7 @@ const deletions = computed(() => toRun.value.filter((a) => isDelete(a.kind)));
 
 function describe(meta: EntryMeta | null): string {
   if (!meta) return '—';
-  return meta.is_dir ? 'dossier' : `${formatSize(meta.size)} · ${formatDate(meta.modified)}`;
+  return meta.is_dir ? t.sync.folder : `${formatSize(meta.size)} · ${formatDate(meta.modified)}`;
 }
 
 async function compare() {
@@ -100,12 +83,12 @@ async function compare() {
     problems.value = plan.problems;
     skippedLinks.value = plan.skipped_links;
     phase.value = 'preview';
-    logStore.addLog('Info', 'Synchronisation', 'Comparé', `${localRoot} ⇄ ${remoteRoot} — ${plan.actions.length} action(s)`);
+    logStore.addLog('Info', t.log.sync, t.sync.compared, `${localRoot} ⇄ ${remoteRoot} — ${t.sync.actions(plan.actions.length)}`);
   } catch (err) {
     phase.value = 'options';
     if (isBackendError(err) && err.kind === 'Cancelled') return;
     error.value = errorMessage(err);
-    logStore.addLog('Error', 'Synchronisation', 'Échec', `${localRoot} ⇄ ${remoteRoot} — ${error.value}`);
+    logStore.addLog('Error', t.log.sync, t.log.failed, `${localRoot} ⇄ ${remoteRoot} — ${error.value}`);
   }
 }
 
@@ -131,28 +114,24 @@ async function run() {
 </script>
 
 <template>
-  <BaseDialog title="Synchroniser les dossiers" :width="780" @cancel="close">
+  <BaseDialog :title="t.sync.title" :width="780" @cancel="close">
     <div class="roots">
-      <div><span class="form-label">Local</span> {{ localRoot }}</div>
-      <div><span class="form-label">Serveur</span> {{ remoteRoot }}</div>
+      <div><span class="form-label">{{ t.sync.local }}</span> {{ localRoot }}</div>
+      <div><span class="form-label">{{ t.sync.server }}</span> {{ remoteRoot }}</div>
     </div>
 
     <template v-if="phase === 'options' || phase === 'comparing'">
       <fieldset class="modes" :disabled="phase === 'comparing'">
-        <label><input v-model="mode" type="radio" value="Upload" /> Envoyer vers le serveur</label>
-        <label><input v-model="mode" type="radio" value="Download" /> Récupérer depuis le serveur</label>
-        <label><input v-model="mode" type="radio" value="Both" /> Dans les deux sens</label>
+        <legend class="visually-hidden">{{ t.sync.direction }}</legend>
+        <label><input v-model="mode" type="radio" value="Upload" /> {{ t.sync.upload }}</label>
+        <label><input v-model="mode" type="radio" value="Download" /> {{ t.sync.download }}</label>
+        <label><input v-model="mode" type="radio" value="Both" /> {{ t.sync.both }}</label>
       </fieldset>
       <p class="hint">
-        <template v-if="mode === 'Both'">
-          Le fichier le plus récent remplace l'autre. Rien n'est supprimé : un fichier absent d'un côté est copié.
-        </template>
-        <template v-else>
-          Seule la destination est modifiée. Un fichier plus récent à la destination n'est remplacé que si vous le cochez.
-        </template>
+        {{ mode === 'Both' ? t.sync.bothHint : t.sync.oneWayHint }}
       </p>
 
-      <label class="form-label" for="sync-excludes">Exclusions</label>
+      <label class="form-label" for="sync-excludes">{{ t.sync.excludes }}</label>
       <input
         id="sync-excludes"
         v-model="excludesText"
@@ -165,28 +144,28 @@ async function run() {
       <template v-if="mode !== 'Both'">
         <label class="checkbox">
           <input v-model="deleteOrphans" type="checkbox" :disabled="phase === 'comparing'" />
-          Supprimer à la destination ce qui n'existe plus à la source
+          {{ t.sync.deleteOrphans }}
         </label>
         <p v-if="deleteOrphans" class="warning">
-          Les suppressions seront listées dans l'aperçu et demanderont une confirmation.
+          {{ t.sync.deleteOrphansHint }}
         </p>
       </template>
 
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <p v-if="phase === 'comparing'" class="hint">Analyse des deux dossiers en cours…</p>
+      <p v-if="phase === 'comparing'" class="hint" role="status">{{ t.sync.comparing }}</p>
     </template>
 
     <template v-else-if="phase === 'preview'">
-      <p v-if="rows.length === 0" class="hint">Rien à faire : les dossiers sont déjà synchronisés.</p>
+      <p v-if="rows.length === 0" class="hint" role="status">{{ t.sync.nothing }}</p>
       <div v-else class="plan">
         <table>
           <thead>
             <tr>
-              <th></th>
-              <th>Action</th>
-              <th>Chemin</th>
-              <th>Local</th>
-              <th>Serveur</th>
+              <th><span class="visually-hidden">{{ t.sync.include }}</span></th>
+              <th>{{ t.sync.action }}</th>
+              <th>{{ t.sync.path }}</th>
+              <th>{{ t.sync.local }}</th>
+              <th>{{ t.sync.server }}</th>
             </tr>
           </thead>
           <tbody>
@@ -197,17 +176,17 @@ async function run() {
                   v-model="row.choice"
                   class="choice"
                   :disabled="row.reason === 'TypeMismatch'"
-                  :aria-label="`Résoudre le conflit sur ${row.path}`"
+                  :aria-label="t.sync.resolve(row.path)"
                 >
-                  <option value="Skip">Ignorer</option>
-                  <option value="Upload">Envoyer</option>
-                  <option value="Download">Récupérer</option>
+                  <option value="Skip">{{ t.sync.skip }}</option>
+                  <option value="Upload">{{ t.sync.send }}</option>
+                  <option value="Download">{{ t.sync.fetch }}</option>
                 </select>
                 <input v-else v-model="row.selected" type="checkbox" :aria-label="row.path" />
               </td>
               <td class="action">
-                {{ kindLabels[row.kind] }}
-                <div class="reason">{{ reasonLabels[row.reason] }}</div>
+                {{ t.sync.kinds[row.kind] }}
+                <div class="reason">{{ t.sync.reasons[row.reason] }}</div>
               </td>
               <td class="path" :title="row.path">{{ row.path }}</td>
               <td class="meta">{{ describe(row.local) }}</td>
@@ -217,44 +196,44 @@ async function run() {
         </table>
       </div>
       <div v-if="problems.length > 0" class="warning" role="alert">
-        Dossiers illisibles, ignorés (aucune action en dessous) :
+        {{ t.sync.unreadable }}
         <ul>
-          <li v-for="p in problems" :key="p">{{ p }}</li>
+          <li v-for="(p, i) in problems" :key="i">{{ errorMessage(p) }}</li>
         </ul>
       </div>
       <p v-if="skippedLinks.length > 0" class="hint">
-        {{ skippedLinks.length }} lien(s) vers des dossiers ignoré(s) :
+        {{ t.sync.skippedLinks(skippedLinks.length) }}
         {{ skippedLinks.slice(0, 5).join(', ') }}{{ skippedLinks.length > 5 ? '…' : '' }}
       </p>
     </template>
 
     <template v-else>
       <p>
-        <strong>{{ deletions.length }} élément(s) seront supprimés définitivement.</strong>
-        Cette action est irréversible.
+        <strong>{{ t.sync.deletions(deletions.length) }}</strong>
+        {{ t.sync.irreversible }}
       </p>
       <ul class="deletions">
-        <li v-for="a in deletions.slice(0, 20)" :key="a.path">{{ kindLabels[a.kind] }} — {{ a.path }}</li>
-        <li v-if="deletions.length > 20">… et {{ deletions.length - 20 }} autre(s)</li>
+        <li v-for="a in deletions.slice(0, 20)" :key="a.path">{{ t.sync.kinds[a.kind] }} — {{ a.path }}</li>
+        <li v-if="deletions.length > 20">{{ t.common.more(deletions.length - 20) }}</li>
       </ul>
     </template>
 
     <template #footer>
-      <button v-if="phase === 'comparing'" class="btn" @click="stopComparing">Arrêter l'analyse</button>
-      <button v-else class="btn" @click="close">Fermer</button>
+      <button v-if="phase === 'comparing'" class="btn" @click="stopComparing">{{ t.sync.stopComparing }}</button>
+      <button v-else class="btn" @click="close">{{ t.common.close }}</button>
 
-      <button v-if="phase === 'options'" class="btn btn-primary" @click="compare">Comparer</button>
+      <button v-if="phase === 'options'" class="btn btn-primary" @click="compare">{{ t.sync.compare }}</button>
 
       <template v-if="phase === 'preview'">
-        <button class="btn" @click="phase = 'options'">Modifier les options</button>
+        <button class="btn" @click="phase = 'options'">{{ t.sync.changeOptions }}</button>
         <button class="btn btn-primary" :disabled="toRun.length === 0" @click="run">
-          Exécuter ({{ toRun.length }})
+          {{ t.sync.run(toRun.length) }}
         </button>
       </template>
 
       <template v-if="phase === 'confirm'">
-        <button class="btn" @click="phase = 'preview'">Revenir à l'aperçu</button>
-        <button class="btn btn-danger" @click="run">Supprimer et synchroniser</button>
+        <button class="btn" @click="phase = 'preview'">{{ t.sync.backToPreview }}</button>
+        <button class="btn btn-danger" @click="run">{{ t.sync.deleteAndSync }}</button>
       </template>
     </template>
   </BaseDialog>

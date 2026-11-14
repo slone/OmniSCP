@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import BaseDialog from './BaseDialog.vue';
 import type { FileEntry, PaneSide, TreeSize } from '../../types';
-import { formatSize } from '../../utils/format';
+import { formatDateTime, formatSize } from '../../utils/format';
+import { t } from '../../i18n';
 import { errorMessage } from '../../utils/errors';
 import { useFileActionsStore } from '../../stores/fileActions';
 import { useConnectionStore } from '../../stores/connection';
@@ -17,13 +18,9 @@ const single = computed(() => (props.entries.length === 1 ? props.entries[0] : n
 const hasFolders = computed(() => props.entries.some((e) => e.is_dir && !e.is_symlink));
 const filesSize = computed(() => props.entries.reduce((sum, e) => (e.is_dir ? sum : sum + e.size), 0));
 
-function bytes(n: number) {
-  return `${n.toLocaleString('fr-FR')} octet${n > 1 ? 's' : ''}`;
-}
-
 function typeLabel(e: FileEntry) {
-  if (e.is_symlink) return e.is_dir ? 'Lien vers un dossier' : 'Lien vers un fichier';
-  return e.is_dir ? 'Dossier' : 'Fichier';
+  if (e.is_symlink) return e.is_dir ? t.properties.linkToFolder : t.properties.linkToFile;
+  return e.is_dir ? t.properties.folder : t.properties.file;
 }
 
 function location(e: FileEntry) {
@@ -34,10 +31,6 @@ function location(e: FileEntry) {
 function account(name?: string, id?: number) {
   if (name && id !== undefined) return `${name} (${id})`;
   return name ?? (id !== undefined ? String(id) : '—');
-}
-
-function fullDate(timestamp?: number) {
-  return timestamp ? new Date(timestamp * 1000).toLocaleString('fr-FR') : '—';
 }
 
 // --- Link target ---
@@ -85,21 +78,21 @@ onBeforeUnmount(() => {
 });
 
 // --- Permissions ---
-const WHO = [
-  { label: 'Propriétaire', shift: 6 },
-  { label: 'Groupe', shift: 3 },
-  { label: 'Autres', shift: 0 },
-];
-const WHAT = [
-  { label: 'Lecture', bit: 4 },
-  { label: 'Écriture', bit: 2 },
-  { label: 'Exécution', bit: 1 },
-];
-const SPECIAL = [
-  { label: 'Set-UID', bit: 0o4000, hint: 'Exécuté avec les droits du propriétaire' },
-  { label: 'Set-GID', bit: 0o2000, hint: 'Exécuté avec les droits du groupe ; dans un dossier, le contenu hérite du groupe' },
-  { label: 'Sticky', bit: 0o1000, hint: 'Dans un dossier, seul le propriétaire d’un élément peut le supprimer ou le renommer' },
-];
+const WHO = computed(() => [
+  { label: t.properties.owner, shift: 6 },
+  { label: t.properties.group, shift: 3 },
+  { label: t.properties.others, shift: 0 },
+]);
+const WHAT = computed(() => [
+  { label: t.properties.read, bit: 4 },
+  { label: t.properties.write, bit: 2 },
+  { label: t.properties.execute, bit: 1 },
+]);
+const SPECIAL = computed(() => [
+  { label: 'Set-UID', bit: 0o4000, hint: t.properties.setuidHint },
+  { label: 'Set-GID', bit: 0o2000, hint: t.properties.setgidHint },
+  { label: 'Sticky', bit: 0o1000, hint: t.properties.stickyHint },
+]);
 
 const original = computed(() => single.value?.mode);
 const mode = ref(original.value ?? 0);
@@ -144,61 +137,61 @@ async function applyPermissions() {
 </script>
 
 <template>
-  <BaseDialog :title="single ? `Propriétés — ${single.name}` : `Propriétés — ${entries.length} éléments`" :width="460" @cancel="emit('close')">
+  <BaseDialog :title="single ? t.properties.title(single.name) : t.properties.titleMany(entries.length)" :width="460" @cancel="emit('close')">
     <dl class="facts">
       <template v-if="single">
-        <dt>Type</dt>
+        <dt>{{ t.properties.type }}</dt>
         <dd>{{ typeLabel(single) }}</dd>
         <template v-if="single.is_symlink">
-          <dt>Cible</dt>
+          <dt>{{ t.properties.target }}</dt>
           <dd class="mono">
             <span v-if="linkTarget !== null">{{ linkTarget }}</span>
             <span v-else-if="linkError" class="error">{{ linkError }}</span>
             <span v-else class="muted">…</span>
           </dd>
         </template>
-        <dt>Emplacement</dt>
+        <dt>{{ t.properties.location }}</dt>
         <dd class="mono">{{ location(single) }}</dd>
-        <dt>Modifié</dt>
-        <dd>{{ fullDate(single.modified) }}</dd>
-        <dt>Propriétaire</dt>
+        <dt>{{ t.properties.modified }}</dt>
+        <dd>{{ formatDateTime(single.modified) }}</dd>
+        <dt>{{ t.properties.owner }}</dt>
         <dd>{{ account(single.owner, single.uid) }}</dd>
-        <dt>Groupe</dt>
+        <dt>{{ t.properties.group }}</dt>
         <dd>{{ account(single.group, single.gid) }}</dd>
       </template>
       <template v-else>
-        <dt>Sélection</dt>
+        <dt>{{ t.properties.selection }}</dt>
         <dd>
-          {{ entries.filter((e) => e.is_dir).length }} dossier(s), {{ entries.filter((e) => !e.is_dir).length }} fichier(s)
+          {{ t.properties.selectionCount(entries.filter((e) => e.is_dir).length, entries.filter((e) => !e.is_dir).length) }}
         </dd>
       </template>
 
-      <dt>Taille</dt>
+      <dt>{{ t.properties.size }}</dt>
       <dd>
         <template v-if="!hasFolders && !size">
-          {{ formatSize(filesSize) }} <span class="muted">({{ bytes(filesSize) }})</span>
+          {{ formatSize(filesSize) }} <span class="muted">({{ t.common.bytes(filesSize) }})</span>
         </template>
         <template v-else-if="size">
-          {{ formatSize(size.bytes) }} <span class="muted">({{ bytes(size.bytes) }})</span>
-          <div class="muted">{{ size.files }} fichier(s) dans {{ size.folders }} dossier(s)</div>
+          {{ formatSize(size.bytes) }} <span class="muted">({{ t.common.bytes(size.bytes) }})</span>
+          <div class="muted">{{ t.properties.contents(size.files, size.folders) }}</div>
           <div v-if="size.unreadable > 0" class="warning">
-            {{ size.unreadable }} élément(s) illisible(s) : la taille réelle est plus grande.
+            {{ t.properties.unreadable(size.unreadable) }}
           </div>
         </template>
         <template v-else-if="computing">
-          <span class="muted">Calcul en cours…</span>
-          <button class="link-btn" @click="cancelSize">Arrêter</button>
+          <span class="muted" role="status">{{ t.properties.computing }}</span>
+          <button class="link-btn" @click="cancelSize">{{ t.common.stop }}</button>
         </template>
         <template v-else>
-          <button class="link-btn" @click="computeSize">Calculer</button>
-          <span class="muted"> — parcourt tout le contenu{{ side === 'remote' ? ', sur une connexion séparée' : '' }}</span>
-          <div v-if="sizeError" class="error">{{ sizeError }}</div>
+          <button class="link-btn" @click="computeSize">{{ t.properties.compute }}</button>
+          <span class="muted">{{ side === 'remote' ? t.properties.computeHintRemote : t.properties.computeHintLocal }}</span>
+          <div v-if="sizeError" class="error" role="alert">{{ sizeError }}</div>
         </template>
       </dd>
     </dl>
 
     <section v-if="single" class="perms">
-      <h3 class="form-label">Droits</h3>
+      <h3 class="form-label">{{ t.properties.permissions }}</h3>
       <template v-if="original !== undefined">
         <table class="perm-grid">
           <thead>
@@ -228,7 +221,7 @@ async function applyPermissions() {
           </label>
         </div>
         <label class="octal">
-          Octal
+          {{ t.properties.octal }}
           <input
             v-model="octal"
             class="form-input mono"
@@ -237,25 +230,25 @@ async function applyPermissions() {
             :aria-invalid="!octalValid"
             @input="onOctalInput"
           />
-          <span v-if="!octalValid" class="error">3 ou 4 chiffres de 0 à 7</span>
+          <span v-if="!octalValid" class="error">{{ t.properties.octalInvalid }}</span>
         </label>
-        <p v-if="single.is_symlink" class="muted">S’applique à la cible du lien.</p>
-        <p v-if="applyFailed" class="error" role="alert">Les droits n’ont pas pu être modifiés. Le détail est dans le journal.</p>
+        <p v-if="single.is_symlink" class="muted">{{ t.properties.appliesToTarget }}</p>
+        <p v-if="applyFailed" class="error" role="alert">{{ t.properties.applyFailed }}</p>
       </template>
       <p v-else class="muted">
-        {{ single.permissions ?? '—' }} — les droits Unix n’existent pas sur ce système.
+        {{ single.permissions ?? '—' }} {{ t.properties.noUnix }}
       </p>
     </section>
 
     <template #footer>
-      <button class="btn" @click="emit('close')">{{ changed ? 'Annuler' : 'Fermer' }}</button>
+      <button class="btn" @click="emit('close')">{{ changed ? t.common.cancel : t.common.close }}</button>
       <button
         v-if="single && original !== undefined"
         class="btn btn-primary"
         :disabled="!changed || !octalValid || applying"
         @click="applyPermissions"
       >
-        Appliquer les droits
+        {{ t.properties.apply }}
       </button>
     </template>
   </BaseDialog>

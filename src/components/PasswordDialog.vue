@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, useId } from 'vue';
+import BaseDialog from './dialogs/BaseDialog.vue';
+import { t } from '../i18n';
 
 const props = defineProps<{
   profileName: string;
@@ -16,6 +18,7 @@ const emit = defineEmits<{
 const password = ref('');
 const remember = ref(props.rememberDefault ?? false);
 const inputRef = ref<HTMLInputElement | null>(null);
+const inputId = useId();
 
 onMounted(() => {
   inputRef.value?.focus();
@@ -24,104 +27,44 @@ onMounted(() => {
 function onSubmit() {
   emit('submit', password.value, remember.value);
 }
-
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    emit('cancel');
-  }
-}
-
-function onOverlayClick(e: MouseEvent) {
-  if ((e.target as HTMLElement).classList.contains('dialog-overlay')) {
-    emit('cancel');
-  }
-}
 </script>
 
 <template>
-  <div class="dialog-overlay" @click="onOverlayClick" @keydown="onKeydown">
-    <div class="dialog-panel">
-      <div class="dialog-header">
-        <span class="dialog-title">Authentification — {{ profileName }}</span>
+  <BaseDialog :title="t.auth.title(profileName)" :width="380" @cancel="emit('cancel')">
+    <form class="form" @submit.prevent="onSubmit">
+      <p v-if="notice" class="notice" role="alert">{{ notice }}</p>
+      <div class="form-group">
+        <label class="form-label" :for="inputId">{{ promptLabel }}</label>
+        <input
+          :id="inputId"
+          ref="inputRef"
+          v-model="password"
+          type="password"
+          class="form-input"
+          autocomplete="off"
+        />
       </div>
-
-      <form class="dialog-body" @submit.prevent="onSubmit">
-        <p v-if="notice" class="notice">{{ notice }}</p>
-        <div class="form-group">
-          <label class="form-label">{{ promptLabel }}</label>
-          <input
-            ref="inputRef"
-            v-model="password"
-            type="password"
-            class="form-input"
-            autocomplete="off"
-          />
-        </div>
-        <label class="checkbox-label">
-          <input v-model="remember" type="checkbox" />
-          Enregistrer dans le trousseau du système
-        </label>
-      </form>
-
-      <div class="dialog-footer">
-        <button class="btn btn-cancel" @click="emit('cancel')">Annuler</button>
-        <button class="btn btn-save" @click="onSubmit">Connexion</button>
-      </div>
-    </div>
-  </div>
+      <label class="checkbox-label">
+        <input v-model="remember" type="checkbox" />
+        {{ t.auth.remember }}
+      </label>
+    </form>
+    <template #footer>
+      <button class="btn" @click="emit('cancel')">{{ t.common.cancel }}</button>
+      <button class="btn btn-primary" @click="onSubmit">{{ t.auth.submit }}</button>
+    </template>
+  </BaseDialog>
 </template>
 
 <style scoped>
-.dialog-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--color-overlay);
-}
-
-.dialog-panel {
-  width: 380px;
-  display: flex;
-  flex-direction: column;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  box-shadow: 0 8px 32px var(--shadow-color);
-}
-
-.dialog-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.dialog-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text);
-}
-
-.dialog-body {
-  padding: 16px;
+.form {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
 .notice {
-  font-size: 12px;
   color: var(--color-warning);
-}
-
-.checkbox-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--color-text);
-  cursor: pointer;
 }
 
 .form-group {
@@ -130,63 +73,10 @@ function onOverlayClick(e: MouseEvent) {
   gap: 4px;
 }
 
-.form-label {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.form-input {
-  padding: 6px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 3px;
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-}
-
-.form-input:focus {
-  border-color: var(--color-accent);
-}
-
-.dialog-footer {
+.checkbox-label {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--color-border);
-}
-
-.btn {
-  padding: 6px 16px;
-  border: 1px solid var(--color-border);
-  border-radius: 3px;
-  font-size: 12px;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
-  font-family: inherit;
-}
-
-.btn-cancel {
-  background: none;
-  color: var(--color-text-muted);
-}
-
-.btn-cancel:hover {
-  background: var(--color-hover);
-  color: var(--color-text);
-}
-
-.btn-save {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: var(--color-on-accent);
-}
-
-.btn-save:hover {
-  background: var(--color-accent-hover);
 }
 </style>

@@ -2,6 +2,7 @@
 import { nextTick, onMounted, ref, watch } from 'vue';
 import { useLogStore } from '../../stores/logs';
 import { errorMessage } from '../../utils/errors';
+import { intlLocale, t } from '../../i18n';
 
 const logStore = useLogStore();
 
@@ -20,7 +21,7 @@ watch(() => logStore.entries.length, scrollToEnd);
 
 // The journal keeps earlier sessions, so the time alone would be ambiguous.
 function formatTime(timestamp: number): string {
-  return new Date(timestamp * 1000).toLocaleString('fr-FR', {
+  return new Date(timestamp * 1000).toLocaleString(intlLocale(), {
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',
@@ -31,9 +32,9 @@ function formatTime(timestamp: number): string {
 
 async function onExport() {
   try {
-    message.value = `Exporté vers ${await logStore.exportToDownloads()}`;
+    message.value = t.logs.exported(await logStore.exportToDownloads());
   } catch (err) {
-    message.value = `Échec de l'export : ${errorMessage(err)}`;
+    message.value = t.logs.exportFailed(errorMessage(err));
   }
 }
 
@@ -43,7 +44,7 @@ async function onClear() {
     await logStore.clear();
     message.value = '';
   } catch (err) {
-    message.value = `Échec de l'effacement : ${errorMessage(err)}`;
+    message.value = t.logs.clearFailed(errorMessage(err));
   }
 }
 </script>
@@ -51,20 +52,20 @@ async function onClear() {
 <template>
   <div class="logs-panel">
     <div class="logs-toolbar">
-      <span class="logs-message" :title="message">
-        <template v-if="logStore.saveError">Journal non enregistré : {{ logStore.saveError }}</template>
+      <span class="logs-message" :title="message" role="status">
+        <template v-if="logStore.saveError">{{ t.logs.notSaved(logStore.saveError) }}</template>
         <template v-else>{{ message }}</template>
       </span>
-      <button class="logs-btn" :disabled="logStore.entries.length === 0" @click="onExport">Exporter</button>
+      <button class="logs-btn" :disabled="logStore.entries.length === 0" @click="onExport">{{ t.logs.export }}</button>
       <template v-if="confirmingClear">
-        <button class="logs-btn logs-btn-danger" @click="onClear">Effacer tout le journal ?</button>
-        <button class="logs-btn" @click="confirmingClear = false">Annuler</button>
+        <button class="logs-btn logs-btn-danger" @click="onClear">{{ t.logs.confirmClear }}</button>
+        <button class="logs-btn" @click="confirmingClear = false">{{ t.common.cancel }}</button>
       </template>
       <button v-else class="logs-btn" :disabled="logStore.entries.length === 0" @click="confirmingClear = true">
-        Effacer
+        {{ t.logs.clear }}
       </button>
     </div>
-    <div ref="list" class="log-entries">
+    <div ref="list" class="log-entries" role="log" aria-live="off" :aria-label="t.logs.label" tabindex="0">
       <div
         v-for="(entry, i) in logStore.entries"
         :key="i"
@@ -72,7 +73,7 @@ async function onClear() {
       >
         <span class="log-time">{{ formatTime(entry.timestamp) }}</span>
         <span :class="['log-level', 'level-' + entry.level.toLowerCase()]">
-          {{ entry.level }}
+          {{ t.logs.levels[entry.level] ?? entry.level }}
         </span>
         <span class="log-action">{{ entry.action }}</span>
         <span class="log-status">{{ entry.status }}</span>

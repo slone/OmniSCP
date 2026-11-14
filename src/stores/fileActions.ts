@@ -9,6 +9,7 @@ import { useTransfersStore } from './transfers';
 import { useSettingsStore } from './settings';
 import { useEditsStore } from './edits';
 import { errorMessage } from '../utils/errors';
+import { t } from '../i18n';
 
 export type FileDialog =
   | { type: 'mkdir'; side: PaneSide }
@@ -97,10 +98,10 @@ export const useFileActionsStore = defineStore('fileActions', () => {
     const octal = mode.toString(8).padStart(4, '0');
     try {
       await invoke(command, { path: entry.path, mode });
-      useLogStore().addLog('Info', 'Droits', 'OK', `${entry.path} → ${octal}`);
+      useLogStore().addLog('Info', t.log.permissions, t.log.ok, `${entry.path} → ${octal}`);
       return true;
     } catch (err) {
-      useLogStore().addLog('Error', 'Droits', 'Échec', `${entry.path} — ${errorMessage(err)}`);
+      useLogStore().addLog('Error', t.log.permissions, t.log.failed, `${entry.path} — ${errorMessage(err)}`);
       await useConnectionStore().handleConnectionLost(err);
       return false;
     } finally {
@@ -118,10 +119,10 @@ export const useFileActionsStore = defineStore('fileActions', () => {
     const command = side === 'local' ? 'create_local_dir' : 'create_remote_dir';
     try {
       const path = await invoke<string>(command, { parent: store.currentPath, name });
-      useLogStore().addLog('Info', 'Nouveau dossier', 'OK', path);
+      useLogStore().addLog('Info', t.log.mkdir, t.log.ok, path);
       await store.refresh();
     } catch (err) {
-      useLogStore().addLog('Error', 'Nouveau dossier', 'Échec', `${name} — ${errorMessage(err)}`);
+      useLogStore().addLog('Error', t.log.mkdir, t.log.failed, `${name} — ${errorMessage(err)}`);
       await useConnectionStore().handleConnectionLost(err);
     }
   }
@@ -133,11 +134,11 @@ export const useFileActionsStore = defineStore('fileActions', () => {
     const command = side === 'local' ? 'rename_local' : 'rename_remote';
     try {
       const target = await invoke<string>(command, { path: entry.path, newName });
-      useLogStore().addLog('Info', 'Renommer', 'OK', `${entry.path} → ${target}`);
+      useLogStore().addLog('Info', t.log.rename, t.log.ok, `${entry.path} → ${target}`);
       await store.refresh();
       store.selected = [target];
     } catch (err) {
-      useLogStore().addLog('Error', 'Renommer', 'Échec', `${entry.path} — ${errorMessage(err)}`);
+      useLogStore().addLog('Error', t.log.rename, t.log.failed, `${entry.path} — ${errorMessage(err)}`);
       await useConnectionStore().handleConnectionLost(err);
     }
   }
@@ -149,9 +150,9 @@ export const useFileActionsStore = defineStore('fileActions', () => {
     for (const entry of entries) {
       try {
         await invoke(command, { path: entry.path });
-        useLogStore().addLog('Info', 'Supprimer', 'OK', entry.path);
+        useLogStore().addLog('Info', t.log.delete, t.log.ok, entry.path);
       } catch (err) {
-        useLogStore().addLog('Error', 'Supprimer', 'Échec', `${entry.path} — ${errorMessage(err)}`);
+        useLogStore().addLog('Error', t.log.delete, t.log.failed, `${entry.path} — ${errorMessage(err)}`);
         await useConnectionStore().handleConnectionLost(err);
         if (!useConnectionStore().connected && side === 'remote') return;
       }

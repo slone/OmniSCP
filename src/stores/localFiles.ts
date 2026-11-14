@@ -5,6 +5,7 @@ import type { FileEntry } from '../types';
 import { useLogStore } from './logs';
 import { useNavHistory, type NavKind } from '../utils/history';
 import { errorMessage } from '../utils/errors';
+import { t } from '../i18n';
 
 export const useLocalFilesStore = defineStore('localFiles', () => {
   const currentPath = ref('');
@@ -21,7 +22,7 @@ export const useLocalFilesStore = defineStore('localFiles', () => {
     } catch (err) {
       const logStore = useLogStore();
       const message = errorMessage(err);
-      logStore.addLog('Error', 'Initialisation', 'Échec', message);
+      logStore.addLog('Error', t.log.startup, t.log.failed, message);
       error.value = message;
     }
   }
@@ -43,10 +44,10 @@ export const useLocalFilesStore = defineStore('localFiles', () => {
       files.value = result;
       history.moved(currentPath.value, path, kind);
       currentPath.value = path;
-      logStore.addLog('Info', 'Navigation', 'OK', `${path} — ${result.length} élément(s)`);
+      logStore.addLog('Info', t.log.localNav, t.log.ok, t.log.listed(path, result.length));
     } catch (err) {
       const message = errorMessage(err);
-      logStore.addLog('Error', 'Navigation', 'Échec', `${path} — ${message}`);
+      logStore.addLog('Error', t.log.localNav, t.log.failed, `${path} — ${message}`);
       error.value = message;
     } finally {
       loading.value = false;

@@ -1,22 +1,14 @@
 <script setup lang="ts">
-import { useTransfersStore, type QueuedTransfer } from '../../stores/transfers';
+import { jobProblems, useTransfersStore, type QueuedTransfer } from '../../stores/transfers';
+import type { TransferStatus } from '../../types';
+import { t } from '../../i18n';
 
 const transfers = useTransfersStore();
 
 const directionIcon = { Upload: '↑', Download: '↓', Sync: '⇄' };
 
-function statusLabel(status: string): string {
-  const map: Record<string, string> = {
-    Pending: 'En attente',
-    InProgress: 'En cours',
-    Paused: 'En pause',
-    Completed: 'Terminé',
-    CompletedWithWarnings: 'Terminé avec avertissements',
-    Skipped: 'Ignoré',
-    Cancelled: 'Annulé',
-    Failed: 'Échoué',
-  };
-  return map[status] ?? status;
+function statusLabel(status: TransferStatus): string {
+  return t.queue.statuses[status] ?? status;
 }
 
 function progressPercent(job: QueuedTransfer): number {
@@ -34,77 +26,85 @@ function canPause(job: QueuedTransfer): boolean {
 }
 
 function directionTitle(job: QueuedTransfer): string {
-  if (job.direction === 'Sync') return 'Synchronisation';
-  const way = job.direction === 'Upload' ? 'vers le serveur' : 'depuis le serveur';
-  return job.delete_source ? `Déplacement ${way} : la source est supprimée une fois tout copié` : `Copie ${way}`;
+  if (job.direction === 'Sync') return t.queue.sync;
+  const up = job.direction === 'Upload';
+  if (job.delete_source) return up ? t.queue.moveUp : t.queue.moveDown;
+  return up ? t.queue.copyUp : t.queue.copyDown;
 }
 </script>
 
 <template>
   <div class="transfer-queue">
     <div class="queue-toolbar">
-      <span class="queue-count">{{ transfers.active.length }} en cours</span>
+      <span class="queue-count" role="status">{{ t.queue.active(transfers.active.length) }}</span>
       <span v-if="transfers.queuePaused" class="queue-paused" role="status">
-        File en pause : aucun transfert ne démarre ni n'avance
+        {{ t.queue.paused }}
       </span>
       <div class="queue-spacer" />
       <button
         class="queue-btn"
         :class="{ 'queue-btn-on': transfers.queuePaused }"
         :aria-pressed="transfers.queuePaused"
-        :title="transfers.queuePaused ? 'Reprendre tous les transferts' : 'Suspendre tous les transferts, y compris ceux en cours'"
+        :title="transfers.queuePaused ? t.queue.resumeAllHint : t.queue.pauseAllHint"
         @click="transfers.setQueuePaused(!transfers.queuePaused)"
       >
-        {{ transfers.queuePaused ? '▶ Tout reprendre' : '⏸ Tout suspendre' }}
+        {{ transfers.queuePaused ? t.queue.resumeAll : t.queue.pauseAll }}
       </button>
       <button
         class="queue-btn"
         :disabled="!transfers.jobs.some(transfers.canRetry)"
         @click="transfers.retryAll"
       >
-        Réessayer les échecs
+        {{ t.queue.retryFailed }}
       </button>
       <button
         class="queue-btn"
         :disabled="transfers.jobs.length === transfers.active.length"
         @click="transfers.clearFinished"
       >
-        Effacer les terminés
+        {{ t.queue.clearFinished }}
       </button>
     </div>
     <table v-if="transfers.jobs.length > 0" class="queue-table">
       <thead>
         <tr>
-          <th>Direction</th>
-          <th>Source</th>
-          <th>Destination</th>
-          <th>Progression</th>
-          <th>Statut</th>
-          <th></th>
+          <th>{{ t.queue.direction }}</th>
+          <th>{{ t.queue.source }}</th>
+          <th>{{ t.queue.destination }}</th>
+          <th>{{ t.queue.progress }}</th>
+          <th>{{ t.queue.status }}</th>
+          <th><span class="visually-hidden">{{ t.queue.actions }}</span></th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="job in transfers.jobs" :key="job.id" class="queue-row">
+        <template v-for="job in transfers.jobs" :key="job.id">
+        <tr class="queue-row">
           <td>
-            <span class="direction-icon" :title="directionTitle(job)">{{ directionIcon[job.direction] }}</span>
-            <span v-if="job.delete_source" class="move-mark" :title="directionTitle(job)">déplacer</span>
+            <span class="direction-icon" role="img" :title="directionTitle(job)" :aria-label="directionTitle(job)">{{
+              directionIcon[job.direction]
+            }}</span>
+            <span v-if="job.delete_source" class="move-mark" aria-hidden="true">{{ t.queue.moveMark }}</span>
           </td>
           <td class="path-cell" :title="job.source">{{ job.source }}</td>
           <td class="path-cell" :title="job.destination">{{ job.destination }}</td>
           <td>
-            <div class="progress-bar">
+            <div
+              class="progress-bar"
+              role="progressbar"
+              :aria-label="t.queue.progress"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              :aria-valuenow="progressPercent(job)"
+            >
               <div
                 class="progress-fill"
                 :style="{ width: progressPercent(job) + '%' }"
               />
-              <span class="progress-text">{{ progressPercent(job) }}%</span>
+              <span class="progress-text" aria-hidden="true">{{ progressPercent(job) }}%</span>
             </div>
           </td>
           <td>
-            <span
-              :class="['status-badge', 'status-' + job.status.toLowerCase()]"
-              :title="job.error"
-            >
+            <span :class="['status-badge', 'status-' + job.status.toLowerCase()]">
               {{ statusLabel(job.status) }}
             </span>
           </td>
@@ -112,8 +112,8 @@ function directionTitle(job: QueuedTransfer): string {
             <button
               v-if="canPause(job)"
               class="queue-btn"
-              title="Mettre en pause : un transfert en cours s'arrête entre deux blocs, sa connexion reste ouverte"
-              aria-label="Mettre en pause"
+:title="t.queue.pauseHint"
+              :aria-label="t.queue.pause"
               @click="transfers.pause(job.id)"
             >
               ⏸
@@ -121,29 +121,40 @@ function directionTitle(job: QueuedTransfer): string {
             <button
               v-else-if="job.status === 'Paused'"
               class="queue-btn"
-              title="Reprendre"
-              aria-label="Reprendre"
+:title="t.queue.resume"
+              :aria-label="t.queue.resume"
               @click="transfers.resume(job.id)"
             >
               ▶
             </button>
-            <button v-if="canCancel(job)" class="queue-btn" title="Annuler" aria-label="Annuler" @click="transfers.cancel(job.id)">
+            <button
+              v-if="canCancel(job)"
+              class="queue-btn"
+              :title="t.queue.cancel"
+              :aria-label="t.queue.cancel"
+              @click="transfers.cancel(job.id)"
+            >
               ✕
             </button>
             <button
               v-else-if="transfers.canRetry(job)"
               class="queue-btn"
-              title="Réessayer : seul ce qui manque est copié, sauf si vous aviez choisi d'écraser"
+:title="t.queue.retryHint"
+              :aria-label="t.queue.retry"
               @click="transfers.retry(job)"
             >
               ↻
             </button>
           </td>
         </tr>
+        <tr v-if="job.errors.length > 0" class="problem-row">
+          <td colspan="6">{{ jobProblems(job) }}</td>
+        </tr>
+        </template>
       </tbody>
     </table>
     <div v-else class="queue-empty">
-      Aucun transfert — sélectionnez des fichiers puis Upload/Download (F5), ou glissez-les vers l'autre panneau
+      {{ t.queue.empty }}
     </div>
   </div>
 </template>
@@ -333,5 +344,13 @@ function directionTitle(job: QueuedTransfer): string {
   text-align: center;
   color: var(--color-text-muted);
   font-size: 12px;
+}
+
+.problem-row td {
+  padding: 0 8px 4px 32px;
+  border-top: none;
+  color: var(--color-danger);
+  font-size: 11px;
+  white-space: pre-line;
 }
 </style>

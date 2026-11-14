@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Profile } from '../types';
 import { useLogStore } from './logs';
 import { errorMessage } from '../utils/errors';
+import { t } from '../i18n';
 
 export const useProfilesStore = defineStore('profiles', () => {
   const profiles = ref<Profile[]>([]);
@@ -27,7 +28,7 @@ export const useProfilesStore = defineStore('profiles', () => {
       await invoke('save_profiles', { profiles: profiles.value });
       return true;
     } catch (err) {
-      useLogStore().addLog('Error', 'Profils', 'Échec', `${what} — ${errorMessage(err)}`);
+      useLogStore().addLog('Error', t.log.profiles, t.log.failed, `${what} — ${errorMessage(err)}`);
       return false;
     }
   }
@@ -39,10 +40,10 @@ export const useProfilesStore = defineStore('profiles', () => {
     try {
       const result = await invoke<Profile[]>('load_profiles');
       profiles.value = result;
-      logStore.addLog('Info', 'Profils', 'OK', `${result.length} profil(s) chargé(s)`);
+      logStore.addLog('Info', t.log.profiles, t.log.ok, t.log.profilesLoaded(result.length));
     } catch (err) {
       const message = errorMessage(err);
-      logStore.addLog('Error', 'Profils', 'Échec', `Chargement — ${message}`);
+      logStore.addLog('Error', t.log.profiles, t.log.failed, `${t.log.loading} — ${message}`);
     } finally {
       loading.value = false;
     }
@@ -57,14 +58,12 @@ export const useProfilesStore = defineStore('profiles', () => {
         await invoke('set_saved_password', { profileId: profile.id, password: secret });
         logStore.addLog(
           'Info',
-          'Trousseau',
-          'OK',
-          secret === null
-            ? `Mot de passe de « ${profile.name} » supprimé`
-            : `Mot de passe de « ${profile.name} » enregistré`,
+          t.log.keychain,
+          t.log.ok,
+          secret === null ? t.log.passwordForgotten(profile.name) : t.log.passwordSaved(profile.name),
         );
       } catch (err) {
-        logStore.addLog('Error', 'Profils', 'Échec', `Trousseau — ${errorMessage(err)}`);
+        logStore.addLog('Error', t.log.profiles, t.log.failed, `${t.log.keychain} — ${errorMessage(err)}`);
         profile = { ...profile, save_password: false };
       }
     }
@@ -81,13 +80,13 @@ export const useProfilesStore = defineStore('profiles', () => {
       await invoke('save_profiles', { profiles: profiles.value });
       logStore.addLog(
         'Info',
-        'Profils',
-        'OK',
-        `Profil « ${profile.name} » ${index >= 0 ? 'modifié' : 'créé'}`,
+        t.log.profiles,
+        t.log.ok,
+        index >= 0 ? t.log.profileChanged(profile.name) : t.log.profileCreated(profile.name),
       );
     } catch (err) {
       const message = errorMessage(err);
-      logStore.addLog('Error', 'Profils', 'Échec', `Sauvegarde — ${message}`);
+      logStore.addLog('Error', t.log.profiles, t.log.failed, `${t.log.saving} — ${message}`);
     }
   }
 
@@ -104,16 +103,16 @@ export const useProfilesStore = defineStore('profiles', () => {
 
     if (profile?.save_password) {
       await invoke('set_saved_password', { profileId: id, password: null }).catch((err) =>
-        logStore.addLog('Error', 'Profils', 'Échec', `Trousseau — ${errorMessage(err)}`),
+        logStore.addLog('Error', t.log.profiles, t.log.failed, `${t.log.keychain} — ${errorMessage(err)}`),
       );
     }
 
     try {
       await invoke('save_profiles', { profiles: profiles.value });
-      logStore.addLog('Info', 'Profils', 'OK', `Profil « ${name} » supprimé`);
+      logStore.addLog('Info', t.log.profiles, t.log.ok, t.log.profileDeleted(name));
     } catch (err) {
       const message = errorMessage(err);
-      logStore.addLog('Error', 'Profils', 'Échec', `Suppression — ${message}`);
+      logStore.addLog('Error', t.log.profiles, t.log.failed, `${t.log.deleting} — ${message}`);
     }
   }
 
@@ -125,8 +124,8 @@ export const useProfilesStore = defineStore('profiles', () => {
   async function addProfiles(added: Profile[]) {
     if (added.length === 0) return;
     profiles.value.push(...added);
-    if (await persist('Import')) {
-      useLogStore().addLog('Info', 'Profils', 'OK', `${added.length} profil(s) importé(s)`);
+    if (await persist(t.log.importing)) {
+      useLogStore().addLog('Info', t.log.profiles, t.log.ok, t.log.profilesImported(added.length));
     }
   }
 
@@ -135,12 +134,12 @@ export const useProfilesStore = defineStore('profiles', () => {
     const target = to.trim() || undefined;
     if (target === from) return;
     profiles.value = profiles.value.map((p) => (p.group === from ? { ...p, group: target } : p));
-    if (await persist('Groupe')) {
+    if (await persist(t.log.group)) {
       useLogStore().addLog(
         'Info',
-        'Profils',
-        'OK',
-        target ? `Groupe « ${from} » renommé en « ${target} »` : `Groupe « ${from} » supprimé, ses profils sont conservés`,
+        t.log.profiles,
+        t.log.ok,
+        target ? t.log.groupRenamed(from, target) : t.log.groupRemoved(from),
       );
     }
   }
@@ -150,10 +149,10 @@ export const useProfilesStore = defineStore('profiles', () => {
     const logStore = useLogStore();
     try {
       const count = await invoke<number>('export_profiles', { path, profiles: list });
-      logStore.addLog('Info', 'Profils', 'OK', `${count} profil(s) exporté(s) vers ${path}`);
+      logStore.addLog('Info', t.log.profiles, t.log.ok, t.log.profilesExported(count, path));
       return true;
     } catch (err) {
-      logStore.addLog('Error', 'Profils', 'Échec', `Export — ${errorMessage(err)}`);
+      logStore.addLog('Error', t.log.profiles, t.log.failed, `${t.log.exporting} — ${errorMessage(err)}`);
       return false;
     }
   }

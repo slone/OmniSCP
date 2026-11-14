@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 use crate::protocols::{Protocol, remote_join};
 
 /// FAT stores times with a 2-second resolution.
@@ -88,14 +88,14 @@ pub struct SyncAction {
 pub struct SyncPlan {
     pub actions: Vec<SyncAction>,
     /// Folders that could not be read; nothing below them is planned.
-    pub problems: Vec<String>,
+    pub problems: Vec<OmniError>,
     pub skipped_links: Vec<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct Scan {
     entries: BTreeMap<String, EntryMeta>,
-    problems: Vec<String>,
+    problems: Vec<OmniError>,
     skipped_links: Vec<String>,
     /// Unreadable paths and links to folders: their content is unknown.
     blocked: BTreeSet<String>,
@@ -202,7 +202,7 @@ fn scan_local_entries(
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                scan.problems.push(format!("{rel}: {e}"));
+                scan.problems.push(OmniError::io_context(display_rel(rel), e));
                 scan.block(rel);
                 continue;
             }
@@ -217,7 +217,7 @@ fn scan_local_entries(
             if is_link {
                 scan.skipped_links.push(path.clone());
             } else {
-                scan.problems.push(format!("{path}: unreadable"));
+                scan.problems.push(OmniError::Io(Msg::new("sync.unreadable").with("path", &path)));
             }
             scan.block(&path);
             continue;
@@ -234,7 +234,7 @@ fn scan_local_entries(
                     scan_local_entries(children, &path, excludes, cancel, scan)?;
                 }
                 Err(e) => {
-                    scan.problems.push(format!("{path}: {e}"));
+                    scan.problems.push(OmniError::io_context(&path, e));
                     scan.block(&path);
                 }
             }
@@ -243,6 +243,11 @@ fn scan_local_entries(
         }
     }
     Ok(())
+}
+
+/// The scan root is the empty relative path.
+fn display_rel(rel: &str) -> &str {
+    if rel.is_empty() { "." } else { rel }
 }
 
 pub fn scan_remote(conn: &dyn Protocol, root: &str, excludes: &[String], cancel: &AtomicBool) -> Result<Scan> {
@@ -287,7 +292,7 @@ fn scan_remote_entries(
                 // Every further listing would fail too; better to stop than to report them all.
                 Err(e) if !conn.is_alive() => return Err(e),
                 Err(e) => {
-                    scan.problems.push(format!("{path}: {e}"));
+                    scan.problems.push(e);
                     scan.block(&path);
                 }
             }
@@ -405,7 +410,7 @@ pub fn validate_relative_path(path: &str) -> Result<()> {
     if valid {
         Ok(())
     } else {
-        Err(OmniError::Config(format!("Invalid relative path: \"{path}\"")))
+        Err(OmniError::Config(Msg::new("sync.invalidPath").with("path", path)))
     }
 }
 
@@ -541,7 +546,7 @@ mod tests {
     #[test]
     fn unreadable_folder_is_not_treated_as_missing() {
         let mut local = scan(&[("ok", file(1, 1))]);
-        local.problems.push("secret: denied".into());
+        local.problems.push(OmniError::Io(Msg::new("sync.unreadable").with("path", "secret")));
         local.block("secret");
         let remote = [("ok", file(1, 1)), ("secret", dir()), ("secret/a", file(1, 1)), ("secret2", file(1, 1))];
 
@@ -549,7 +554,8 @@ mod tests {
 
         // `secret2` only shares a prefix with the unreadable folder.
         assert_eq!(summary(&plan), [("secret2", SyncActionKind::DeleteRemote, true)]);
-        assert_eq!(plan.problems, ["secret: denied"]);
+        assert_eq!(plan.problems.len(), 1);
+        assert_eq!(plan.problems[0].msg().and_then(|m| m.param("path")), Some("secret"));
     }
 
     #[test]

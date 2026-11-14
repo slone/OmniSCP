@@ -4,10 +4,11 @@ import { invoke } from '@tauri-apps/api/core';
 import type { AppConfig } from '../types';
 import { useLogStore } from './logs';
 import { errorMessage } from '../utils/errors';
+import { setLanguage, t } from '../i18n';
 
 /// Same as `AppConfig::default()` in Rust; used until the saved settings are read.
 export const DEFAULT_SETTINGS: AppConfig = {
-  language: 'fr',
+  language: 'system',
   theme: 'system',
   concurrent_transfers: 2,
   show_hidden_files: true,
@@ -18,6 +19,11 @@ const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
 
 export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<AppConfig>({ ...DEFAULT_SETTINGS });
+
+  function apply() {
+    setLanguage(settings.value.language);
+    applyTheme();
+  }
 
   function applyTheme() {
     const theme = settings.value.theme;
@@ -33,23 +39,23 @@ export const useSettingsStore = defineStore('settings', () => {
     } catch (err) {
       useLogStore().addLog(
         'Warning',
-        'Paramètres',
-        'Illisibles',
-        `Paramètres par défaut utilisés — ${errorMessage(err)}`,
+        t.settings.log,
+        t.settings.unreadable,
+        `${t.settings.usingDefaults} — ${errorMessage(err)}`,
       );
     }
-    applyTheme();
+    apply();
   }
 
   /// Returns false when saving failed; the previous settings then stay in effect.
   async function save(next: AppConfig): Promise<boolean> {
     try {
       settings.value = await invoke<AppConfig>('save_settings', { settings: next });
-      applyTheme();
-      useLogStore().addLog('Info', 'Paramètres', 'OK', 'Paramètres enregistrés');
+      apply();
+      useLogStore().addLog('Info', t.settings.log, t.settings.ok, t.settings.saved);
       return true;
     } catch (err) {
-      useLogStore().addLog('Error', 'Paramètres', 'Échec', errorMessage(err));
+      useLogStore().addLog('Error', t.settings.log, t.settings.failed, errorMessage(err));
       return false;
     }
   }

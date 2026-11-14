@@ -5,6 +5,7 @@ import { useLocalFilesStore } from '../../stores/localFiles';
 import { useConnectionStore } from '../../stores/connection';
 import { useFileActionsStore } from '../../stores/fileActions';
 import type { PaneSide } from '../../types';
+import { t } from '../../i18n';
 
 const localStore = useLocalFilesStore();
 const connectionStore = useConnectionStore();
@@ -29,7 +30,7 @@ onMounted(() => {
   <div class="dual-pane">
     <div class="pane-left">
       <FilePane
-        title="Local"
+        :title="t.panes.local"
         side="local"
         :path="localStore.currentPath"
         :files="localStore.files"
@@ -58,7 +59,7 @@ onMounted(() => {
     <div class="pane-right">
       <template v-if="connectionStore.connected">
         <FilePane
-          title="Distant"
+          :title="t.panes.remote"
           side="remote"
           :path="connectionStore.currentPath"
           :files="connectionStore.files"
@@ -86,11 +87,11 @@ onMounted(() => {
       </template>
       <div v-else class="pane-placeholder">
         <div v-if="connectionStore.error" class="placeholder-error" role="alert">
-          <strong>Échec de la connexion</strong>
+          <strong>{{ t.panes.connectFailed }}</strong>
           <span>{{ connectionStore.error }}</span>
         </div>
-        <span v-else-if="connectionStore.connecting" class="placeholder-text">Connexion en cours…</span>
-        <span v-else class="placeholder-text">Non connecté — sélectionnez un profil et cliquez Connexion</span>
+        <span v-else-if="connectionStore.connecting" class="placeholder-text" role="status">{{ t.panes.connecting }}</span>
+        <span v-else class="placeholder-text">{{ t.panes.notConnected }}</span>
       </div>
     </div>
   </div>

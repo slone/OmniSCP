@@ -10,6 +10,7 @@ import ProfileDialog from './ProfileDialog.vue';
 import ProfileExchangeDialog from './ProfileExchangeDialog.vue';
 import BaseDialog from '../dialogs/BaseDialog.vue';
 import InputDialog from '../dialogs/InputDialog.vue';
+import { t } from '../../i18n';
 
 const profileStore = useProfilesStore();
 
@@ -17,7 +18,7 @@ const showDialog = ref(false);
 const editingProfile = ref<Profile | undefined>(undefined);
 const search = ref('');
 
-const FILE_FILTERS = [{ name: 'Profils OmniSCP', extensions: ['json'] }];
+const fileFilters = () => [{ name: t.sidebar.fileFilter, extensions: ['json'] }];
 const COLLAPSED_KEY = 'omniscp.collapsedGroups';
 
 const visibleProfiles = computed(() => {
@@ -101,7 +102,7 @@ function openDuplicateDialog(profile: Profile) {
     ...profile,
     tags: [...profile.tags],
     id: '',
-    name: `${profile.name} (copie)`,
+    name: t.sidebar.copyName(profile.name),
     save_password: false,
   };
   showDialog.value = true;
@@ -147,7 +148,7 @@ function openExport(onlyGroup?: string) {
 async function openImport() {
   let path: string | null;
   try {
-    path = await open({ multiple: false, directory: false, filters: FILE_FILTERS });
+    path = await open({ multiple: false, directory: false, filters: fileFilters() });
   } catch (err) {
     notice.value = errorMessage(err);
     return;
@@ -155,11 +156,11 @@ async function openImport() {
   if (!path) return;
   try {
     const profiles = await invoke<Profile[]>('import_profiles', { path });
-    if (profiles.length === 0) notice.value = 'Ce fichier ne contient aucun profil.';
+    if (profiles.length === 0) notice.value = t.sidebar.noProfileInFile;
     else exchange.value = { mode: 'import', profiles };
   } catch (err) {
     const message = errorMessage(err);
-    useLogStore().addLog('Error', 'Profils', 'Échec', `Import — ${message}`);
+    useLogStore().addLog('Error', t.log.profiles, t.log.failed, `${t.log.importing} — ${message}`);
     notice.value = message;
   }
 }
@@ -173,13 +174,13 @@ async function onExchangeConfirm(list: Profile[]) {
   }
   let path: string | null;
   try {
-    path = await save({ defaultPath: 'profils-omniscp.json', filters: FILE_FILTERS });
+    path = await save({ defaultPath: t.sidebar.exportFileName, filters: fileFilters() });
   } catch (err) {
     notice.value = errorMessage(err);
     return;
   }
   if (path && !(await profileStore.exportProfiles(list, path))) {
-    notice.value = "L'export a échoué. Le détail est dans le journal.";
+    notice.value = t.sidebar.exportFailed;
   }
 }
 </script>
@@ -187,15 +188,15 @@ async function onExchangeConfirm(list: Profile[]) {
 <template>
   <aside class="sidebar">
     <div class="sidebar-header">
-      <span class="sidebar-title">Profils</span>
+      <h2 class="sidebar-title">{{ t.sidebar.title }}</h2>
       <input
         v-if="profileStore.profiles.length > 0"
         v-model="search"
         type="search"
         class="search-input"
-        placeholder="Rechercher…"
-        title="Nom, hôte, utilisateur, groupe, tag ou description"
-        aria-label="Rechercher un profil"
+:placeholder="t.sidebar.search"
+        :title="t.sidebar.searchHint"
+        :aria-label="t.sidebar.searchLabel"
         spellcheck="false"
         @keydown.esc="search = ''"
       />
@@ -203,10 +204,10 @@ async function onExchangeConfirm(list: Profile[]) {
 
     <div class="sidebar-content">
       <div v-if="profileStore.profiles.length === 0" class="empty-state">
-        (aucun profil)
+        {{ t.sidebar.empty }}
       </div>
       <div v-else-if="visibleProfiles.length === 0" class="empty-state">
-        Aucun profil ne correspond
+        {{ t.sidebar.noMatch }}
       </div>
       <ul v-else class="profile-list">
         <li v-for="group in sections" :key="'g:' + group.name" class="group">
@@ -216,13 +217,27 @@ async function onExchangeConfirm(list: Profile[]) {
               :aria-expanded="isOpen(group.name)"
               @click="toggleGroup(group.name)"
             >
-              <span class="chevron">{{ isOpen(group.name) ? '▾' : '▸' }}</span>
+              <span class="chevron" aria-hidden="true">{{ isOpen(group.name) ? '▾' : '▸' }}</span>
               <span class="group-name">{{ group.name }}</span>
               <span class="group-count">{{ group.items.length }}</span>
             </button>
             <div class="profile-actions">
-              <button class="btn-icon" title="Renommer le groupe" @click="renamingGroup = group.name">&#9998;</button>
-              <button class="btn-icon" title="Exporter ce groupe" @click="openExport(group.name)">&#8682;</button>
+              <button
+                class="btn-icon"
+                :title="t.sidebar.renameGroup"
+                :aria-label="t.sidebar.renameGroupOf(group.name)"
+                @click="renamingGroup = group.name"
+              >
+                <span aria-hidden="true">&#9998;</span>
+              </button>
+              <button
+                class="btn-icon"
+                :title="t.sidebar.exportGroup"
+                :aria-label="t.sidebar.exportGroupOf(group.name)"
+                @click="openExport(group.name)"
+              >
+                <span aria-hidden="true">&#8682;</span>
+              </button>
             </div>
           </div>
           <ul v-if="isOpen(group.name)" class="profile-list nested">
@@ -233,17 +248,38 @@ async function onExchangeConfirm(list: Profile[]) {
               :class="{ active: profileStore.selectedId === profile.id }"
               @click="onSelectProfile(profile.id)"
             >
-              <div class="profile-info">
-                <div class="profile-name">{{ profile.name }}</div>
-                <div class="profile-detail">{{ profile.protocol }} · {{ profile.host }}</div>
-                <div v-if="profile.tags.length > 0" class="profile-tags">
+              <button type="button" class="profile-info" :aria-pressed="profileStore.selectedId === profile.id">
+                <span class="profile-name">{{ profile.name }}</span>
+                <span class="profile-detail">{{ profile.protocol }} · {{ profile.host }}</span>
+                <span v-if="profile.tags.length > 0" class="profile-tags">
                   <span v-for="tag in profile.tags" :key="tag" class="tag">{{ tag }}</span>
-                </div>
-              </div>
+                </span>
+              </button>
               <div class="profile-actions">
-                <button class="btn-icon" title="Modifier" @click.stop="openEditDialog(profile)">&#9998;</button>
-                <button class="btn-icon" title="Dupliquer" @click.stop="openDuplicateDialog(profile)">&#10697;</button>
-                <button class="btn-icon btn-icon-danger" title="Supprimer" @click.stop="onDeleteProfile(profile)">&#128465;</button>
+                <button
+                  class="btn-icon"
+                  :title="t.sidebar.edit"
+                  :aria-label="t.sidebar.editOf(profile.name)"
+                  @click.stop="openEditDialog(profile)"
+                >
+                  <span aria-hidden="true">&#9998;</span>
+                </button>
+                <button
+                  class="btn-icon"
+                  :title="t.sidebar.duplicate"
+                  :aria-label="t.sidebar.duplicateOf(profile.name)"
+                  @click.stop="openDuplicateDialog(profile)"
+                >
+                  <span aria-hidden="true">&#10697;</span>
+                </button>
+                <button
+                  class="btn-icon btn-icon-danger"
+                  :title="t.sidebar.delete"
+                  :aria-label="t.sidebar.deleteOf(profile.name)"
+                  @click.stop="onDeleteProfile(profile)"
+                >
+                  <span aria-hidden="true">&#128465;</span>
+                </button>
               </div>
             </li>
           </ul>
@@ -255,32 +291,53 @@ async function onExchangeConfirm(list: Profile[]) {
           :class="{ active: profileStore.selectedId === profile.id }"
           @click="onSelectProfile(profile.id)"
         >
-          <div class="profile-info">
-            <div class="profile-name">{{ profile.name }}</div>
-            <div class="profile-detail">{{ profile.protocol }} · {{ profile.host }}</div>
-            <div v-if="profile.tags.length > 0" class="profile-tags">
+          <button type="button" class="profile-info" :aria-pressed="profileStore.selectedId === profile.id">
+            <span class="profile-name">{{ profile.name }}</span>
+            <span class="profile-detail">{{ profile.protocol }} · {{ profile.host }}</span>
+            <span v-if="profile.tags.length > 0" class="profile-tags">
               <span v-for="tag in profile.tags" :key="tag" class="tag">{{ tag }}</span>
-            </div>
-          </div>
+            </span>
+          </button>
           <div class="profile-actions">
-            <button class="btn-icon" title="Modifier" @click.stop="openEditDialog(profile)">&#9998;</button>
-            <button class="btn-icon" title="Dupliquer" @click.stop="openDuplicateDialog(profile)">&#10697;</button>
-            <button class="btn-icon btn-icon-danger" title="Supprimer" @click.stop="onDeleteProfile(profile)">&#128465;</button>
+            <button
+              class="btn-icon"
+              :title="t.sidebar.edit"
+              :aria-label="t.sidebar.editOf(profile.name)"
+              @click.stop="openEditDialog(profile)"
+            >
+              <span aria-hidden="true">&#9998;</span>
+            </button>
+            <button
+              class="btn-icon"
+              :title="t.sidebar.duplicate"
+              :aria-label="t.sidebar.duplicateOf(profile.name)"
+              @click.stop="openDuplicateDialog(profile)"
+            >
+              <span aria-hidden="true">&#10697;</span>
+            </button>
+            <button
+              class="btn-icon btn-icon-danger"
+              :title="t.sidebar.delete"
+              :aria-label="t.sidebar.deleteOf(profile.name)"
+              @click.stop="onDeleteProfile(profile)"
+            >
+              <span aria-hidden="true">&#128465;</span>
+            </button>
           </div>
         </li>
       </ul>
     </div>
 
     <div class="sidebar-footer">
-      <button class="btn-add-profile" @click="openCreateDialog">+ Nouveau profil</button>
+      <button class="btn-add-profile" @click="openCreateDialog">{{ t.sidebar.add }}</button>
       <div class="exchange">
-        <button class="btn-small" title="Ajouter des profils depuis un fichier" @click="openImport">Importer…</button>
+        <button class="btn-small" :title="t.sidebar.importHint" @click="openImport">{{ t.sidebar.import }}</button>
         <button
           class="btn-small"
-          title="Enregistrer des profils dans un fichier, sans mot de passe"
+:title="t.sidebar.exportHint"
           :disabled="profileStore.profiles.length === 0"
           @click="openExport()"
-        >Exporter…</button>
+        >{{ t.sidebar.export }}</button>
       </div>
     </div>
 
@@ -305,28 +362,28 @@ async function onExchangeConfirm(list: Profile[]) {
 
     <InputDialog
       v-if="renamingGroup !== null"
-      title="Renommer le groupe"
-      label="Nouveau nom (un groupe existant les réunit)"
+:title="t.sidebar.renameGroup"
+      :label="t.sidebar.newGroupName"
       :initial-value="renamingGroup"
-      confirm-label="Renommer"
+      :confirm-label="t.sidebar.rename"
       select-all
       @submit="onRenameGroup"
       @cancel="renamingGroup = null"
     />
 
-    <BaseDialog v-if="deleting" title="Supprimer le profil" :width="380" @cancel="deleting = null">
-      <p class="dialog-text">Supprimer le profil « {{ deleting.name }} » ?</p>
-      <p v-if="deleting.save_password" class="dialog-text muted">Son mot de passe enregistré sera aussi effacé du trousseau.</p>
+    <BaseDialog v-if="deleting" :title="t.sidebar.deleteTitle" :width="380" @cancel="deleting = null">
+      <p class="dialog-text">{{ t.sidebar.deleteText(deleting.name) }}</p>
+      <p v-if="deleting.save_password" class="dialog-text muted">{{ t.sidebar.deletePassword }}</p>
       <template #footer>
-        <button ref="keepRef" class="btn" @click="deleting = null">Annuler</button>
-        <button class="btn btn-danger" @click="confirmDelete">Supprimer</button>
+        <button ref="keepRef" class="btn" @click="deleting = null">{{ t.common.cancel }}</button>
+        <button class="btn btn-danger" @click="confirmDelete">{{ t.sidebar.delete }}</button>
       </template>
     </BaseDialog>
 
-    <BaseDialog v-if="notice" title="Profils" :width="400" @cancel="notice = null">
+    <BaseDialog v-if="notice" :title="t.sidebar.title" :width="400" @cancel="notice = null">
       <p class="dialog-text" role="alert">{{ notice }}</p>
       <template #footer>
-        <button class="btn btn-primary" @click="notice = null">OK</button>
+        <button class="btn btn-primary" @click="notice = null">{{ t.sidebar.ok }}</button>
       </template>
     </BaseDialog>
   </aside>
@@ -377,6 +434,7 @@ async function onExchangeConfirm(list: Profile[]) {
 }
 
 .sidebar-title {
+  margin: 0;
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
@@ -421,8 +479,23 @@ async function onExchangeConfirm(list: Profile[]) {
 }
 
 .profile-info {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.profile-info:focus-visible,
+.btn-icon:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
 .profile-name {
@@ -443,14 +516,19 @@ async function onExchangeConfirm(list: Profile[]) {
   white-space: nowrap;
 }
 
+/* Hidden visually, not from the keyboard: they show as soon as one has the focus. */
 .profile-actions {
-  display: none;
+  display: flex;
   gap: 2px;
   flex-shrink: 0;
+  opacity: 0;
 }
 
-.profile-item:hover .profile-actions {
-  display: flex;
+.profile-item:hover .profile-actions,
+.profile-item:focus-within .profile-actions,
+.group-header:hover .profile-actions,
+.group-header:focus-within .profile-actions {
+  opacity: 1;
 }
 
 .btn-icon {

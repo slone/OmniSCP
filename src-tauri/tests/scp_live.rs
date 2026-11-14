@@ -382,7 +382,7 @@ fn a_server_without_a_shell_is_refused_quickly_and_clearly() {
     let refused = conn.connect();
     assert!(started.elapsed().as_secs() < 10, "took {:?}", started.elapsed());
     match refused {
-        Err(OmniError::Protocol(message)) => assert!(message.contains("SFTP"), "{message}"),
+        Err(OmniError::Protocol(message)) => assert_eq!(message.code, "scp.noShell"),
         other => panic!("expected a refusal, got {:?}", other.err()),
     }
     std::fs::remove_dir_all(&tmp).unwrap();

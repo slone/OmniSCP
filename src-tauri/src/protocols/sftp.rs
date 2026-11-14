@@ -3,11 +3,11 @@ use std::time::UNIX_EPOCH;
 
 use ssh2::{ErrorCode, Session, Sftp};
 
-use crate::error::{OmniError, Result};
+use crate::error::{Msg, OmniError, Result};
 use crate::protocols::ssh::open_session;
 use crate::protocols::{
     AccountNames, ConnectParams, CopyError, FileEntry, Progress, Protocol, copy_with_progress, format_permissions,
-    remote_join, sort_entries, temp_path_beside, write_local_atomically,
+    not_found, remote_join, sort_entries, temp_path_beside, write_local_atomically,
 };
 
 // SFTP status codes (draft-ietf-secsh-filexfer-02, section 7).
@@ -18,13 +18,11 @@ const SFTP_PERMISSION_DENIED: i32 = 3;
 const MAX_ACCOUNT_FILE: u64 = 4 * 1024 * 1024;
 
 /// Maps an SFTP failure to a permission error when the server says so.
-fn sftp_err(context: String, err: ssh2::Error) -> OmniError {
+fn sftp_err(context: Msg, err: ssh2::Error) -> OmniError {
     match err.code() {
-        ErrorCode::SFTP(SFTP_PERMISSION_DENIED) => OmniError::Permission(format!("{context}: {err}")),
-        ErrorCode::SFTP(SFTP_NO_SUCH_FILE) => {
-            OmniError::Protocol(format!("{context}: no such file or directory"))
-        }
-        _ => OmniError::Protocol(format!("{context}: {err}")),
+        ErrorCode::SFTP(SFTP_PERMISSION_DENIED) => OmniError::Permission(context.detail(err)),
+        ErrorCode::SFTP(SFTP_NO_SUCH_FILE) => OmniError::Protocol(not_found(&context)),
+        _ => OmniError::Protocol(context.detail(err)),
     }
 }
 
@@ -42,7 +40,7 @@ impl SftpConnection {
     fn sftp(&self) -> Result<&Sftp> {
         self.sftp
             .as_ref()
-            .ok_or_else(|| OmniError::Protocol("Not connected".into()))
+            .ok_or_else(|| OmniError::Protocol(Msg::new("conn.notConnected")))
     }
 
     /// Builds an entry from `lstat` data, describing the target of a symlink.
@@ -108,7 +106,7 @@ impl Protocol for SftpConnection {
         let session = open_session(&self.params)?;
         let sftp = session
             .sftp()
-            .map_err(|e| OmniError::Protocol(format!("SFTP subsystem error: {e}")))?;
+            .map_err(|e| OmniError::Protocol(Msg::new("sftp.subsystem").detail(e)))?;
 
         self.sftp = Some(sftp);
         self.session = Some(session);
@@ -137,7 +135,7 @@ impl Protocol for SftpConnection {
         let resolved = self
             .sftp()?
             .realpath(Path::new(path))
-            .map_err(|e| sftp_err(format!("realpath failed for {path}"), e))?;
+            .map_err(|e| sftp_err(Msg::new("remote.realpath").with("path", path), e))?;
         Ok(resolved.to_string_lossy().into_owned())
     }
 
@@ -145,7 +143,7 @@ impl Protocol for SftpConnection {
         let entries = self
             .sftp()?
             .readdir(Path::new(path))
-            .map_err(|e| sftp_err(format!("Failed to list directory {path}"), e))?;
+            .map_err(|e| sftp_err(Msg::new("remote.list").with("path", path), e))?;
 
         let mut files = Vec::with_capacity(entries.len());
         for (joined, stat) in entries {
@@ -163,26 +161,26 @@ impl Protocol for SftpConnection {
         let stat = self
             .sftp()?
             .lstat(Path::new(path))
-            .map_err(|e| sftp_err(format!("Failed to stat {path}"), e))?;
+            .map_err(|e| sftp_err(Msg::new("remote.stat").with("path", path), e))?;
         self.to_entry(path.into(), &stat)
     }
 
     fn mkdir(&self, path: &str) -> Result<()> {
         self.sftp()?
             .mkdir(Path::new(path), 0o755)
-            .map_err(|e| sftp_err(format!("Failed to create directory {path}"), e))
+            .map_err(|e| sftp_err(Msg::new("remote.mkdir").with("path", path), e))
     }
 
     fn rename(&self, from: &str, to: &str) -> Result<()> {
         self.sftp()?
             .rename(Path::new(from), Path::new(to), None)
-            .map_err(|e| sftp_err(format!("Failed to rename {from} -> {to}"), e))
+            .map_err(|e| sftp_err(Msg::new("remote.rename").with("from", from).with("to", to), e))
     }
 
     fn remove_empty_dir(&self, path: &str) -> Result<()> {
         self.sftp()?
             .rmdir(Path::new(path))
-            .map_err(|e| sftp_err(format!("Failed to remove directory {path}"), e))
+            .map_err(|e| sftp_err(Msg::new("remote.rmdir").with("path", path), e))
     }
 
     fn delete(&self, path: &str) -> Result<()> {
@@ -190,17 +188,17 @@ impl Protocol for SftpConnection {
         // lstat: a symlink to a directory is removed as a link, never followed.
         let stat = sftp
             .lstat(Path::new(path))
-            .map_err(|e| sftp_err(format!("Failed to stat {path}"), e))?;
+            .map_err(|e| sftp_err(Msg::new("remote.stat").with("path", path), e))?;
 
         if stat.is_dir() {
             for entry in self.list_dir(path)? {
                 self.delete(&entry.path.to_string_lossy())?;
             }
             sftp.rmdir(Path::new(path))
-                .map_err(|e| sftp_err(format!("Failed to remove directory {path}"), e))
+                .map_err(|e| sftp_err(Msg::new("remote.rmdir").with("path", path), e))
         } else {
             sftp.unlink(Path::new(path))
-                .map_err(|e| sftp_err(format!("Failed to delete {path}"), e))
+                .map_err(|e| sftp_err(Msg::new("remote.delete").with("path", path), e))
         }
     }
 
@@ -208,27 +206,27 @@ impl Protocol for SftpConnection {
         let sftp = self.sftp()?;
         let existing = sftp.lstat(Path::new(remote)).ok();
         if existing.as_ref().is_some_and(|s| s.is_dir()) {
-            return Err(OmniError::Transfer(format!("{remote} is a directory")));
+            return Err(OmniError::Transfer(Msg::new("transfer.targetIsFolder").with("path", remote)));
         }
 
         let mut local_file = std::fs::File::open(local)
-            .map_err(|e| OmniError::io_context(format!("Failed to open {}", local.display()), e))?;
+            .map_err(|e| OmniError::io_context(local.display(), e))?;
         let temp = temp_path_beside(remote);
         let mut remote_file = sftp
             .create(Path::new(&temp))
-            .map_err(|e| sftp_err(format!("Failed to create a temporary file for {remote}"), e))?;
+            .map_err(|e| sftp_err(Msg::new("remote.tempFile").with("path", remote), e))?;
 
         let result = copy_with_progress(&mut local_file, &mut remote_file, progress)
             .map_err(|e| match e {
                 CopyError::Cancelled => OmniError::Cancelled,
-                CopyError::Read(e) => OmniError::io_context(format!("Failed to read {}", local.display()), e),
-                CopyError::Write(e) => OmniError::Transfer(format!("Failed to write {remote}: {e}")),
+                CopyError::Read(e) => OmniError::io_context(local.display(), e),
+                CopyError::Write(e) => OmniError::Transfer(Msg::new("remote.write").with("path", remote).detail(e)),
             })
             // Dropping the handle would swallow a failure to commit the last writes.
             .and_then(|()| {
                 remote_file
                     .close()
-                    .map_err(|e| OmniError::Transfer(format!("Failed to write {remote}: {e}")))
+                    .map_err(|e| OmniError::Transfer(Msg::new("remote.write").with("path", remote).detail(e)))
             })
             .and_then(|()| {
                 // Keep the source's date (sync compares them) and, for a replaced file, its
@@ -255,14 +253,14 @@ impl Protocol for SftpConnection {
         let stat = ssh2::FileStat { size: None, uid: None, gid: None, perm: Some(mode & 0o7777), atime: None, mtime: None };
         self.sftp()?
             .setstat(Path::new(path), stat)
-            .map_err(|e| sftp_err(format!("Failed to change the permissions of {path}"), e))
+            .map_err(|e| sftp_err(Msg::new("remote.chmod").with("path", path), e))
     }
 
     fn read_link(&self, path: &str) -> Result<String> {
         let target = self
             .sftp()?
             .readlink(Path::new(path))
-            .map_err(|e| sftp_err(format!("Failed to read the link {path}"), e))?;
+            .map_err(|e| sftp_err(Msg::new("remote.readlink").with("path", path), e))?;
         Ok(target.to_string_lossy().into_owned())
     }
 
@@ -282,14 +280,14 @@ impl Protocol for SftpConnection {
         let mut remote_file = self
             .sftp()?
             .open(Path::new(remote))
-            .map_err(|e| sftp_err(format!("Failed to open remote file {remote}"), e))?;
+            .map_err(|e| sftp_err(Msg::new("remote.open").with("path", remote), e))?;
         let mtime = remote_file.stat().ok().and_then(|s| s.mtime);
 
         write_local_atomically(local, mtime, |local_file| {
             copy_with_progress(&mut remote_file, local_file, progress).map_err(|e| match e {
                 CopyError::Cancelled => OmniError::Cancelled,
-                CopyError::Read(e) => OmniError::Transfer(format!("Failed to read {remote}: {e}")),
-                CopyError::Write(e) => OmniError::io_context(format!("Failed to write {}", local.display()), e),
+                CopyError::Read(e) => OmniError::Transfer(Msg::new("remote.read").with("path", remote).detail(e)),
+                CopyError::Write(e) => OmniError::io_context(local.display(), e),
             })
         })
     }

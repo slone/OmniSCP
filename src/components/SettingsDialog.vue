@@ -4,6 +4,7 @@ import BaseDialog from './dialogs/BaseDialog.vue';
 import { useSettingsStore } from '../stores/settings';
 import { useConnectionStore } from '../stores/connection';
 import type { AppConfig } from '../types';
+import { t } from '../i18n';
 
 const MIN_TRANSFERS = 1;
 const MAX_TRANSFERS = 4;
@@ -31,19 +32,28 @@ async function onSave() {
 </script>
 
 <template>
-  <BaseDialog title="Paramètres" :width="440" @cancel="emit('close')">
+  <BaseDialog :title="t.settings.title" :width="440" @cancel="emit('close')">
     <form class="settings" @submit.prevent="onSave">
       <label class="field">
-        <span class="form-label">Thème</span>
-        <select v-model="draft.theme" class="form-input">
-          <option value="system">Comme le système</option>
-          <option value="dark">Sombre</option>
-          <option value="light">Clair</option>
+        <span class="form-label">{{ t.settings.language }}</span>
+        <select v-model="draft.language" class="form-input">
+          <option value="system">{{ t.settings.languageSystem }}</option>
+          <option value="fr" lang="fr">Français</option>
+          <option value="en" lang="en">English</option>
         </select>
       </label>
 
       <label class="field">
-        <span class="form-label">Transferts simultanés</span>
+        <span class="form-label">{{ t.settings.theme }}</span>
+        <select v-model="draft.theme" class="form-input">
+          <option value="system">{{ t.settings.themeSystem }}</option>
+          <option value="dark">{{ t.settings.themeDark }}</option>
+          <option value="light">{{ t.settings.themeLight }}</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span class="form-label">{{ t.settings.transfers }}</span>
         <input
           v-model.number="draft.concurrent_transfers"
           type="number"
@@ -52,35 +62,35 @@ async function onSave() {
           :max="MAX_TRANSFERS"
         />
         <span class="hint">
-          De {{ MIN_TRANSFERS }} à {{ MAX_TRANSFERS }}. Chaque transfert ouvre sa propre session sur le serveur.
-          <template v-if="connection.connected">Prend effet à la prochaine connexion.</template>
+          {{ t.settings.transfersHint(MIN_TRANSFERS, MAX_TRANSFERS) }}
+          <template v-if="connection.connected">{{ t.settings.nextConnection }}</template>
         </span>
       </label>
 
       <label class="field">
-        <span class="form-label">Si un fichier existe déjà à la destination</span>
+        <span class="form-label">{{ t.settings.conflict }}</span>
         <select v-model="draft.default_conflict" class="form-input">
-          <option value="Ask">Demander à chaque fois</option>
-          <option value="Skip">Ignorer le fichier</option>
-          <option value="Rename">Copier sous un autre nom</option>
-          <option value="Overwrite">Écraser sans demander</option>
+          <option value="Ask">{{ t.settings.conflictAsk }}</option>
+          <option value="Skip">{{ t.settings.conflictSkip }}</option>
+          <option value="Rename">{{ t.settings.conflictRename }}</option>
+          <option value="Overwrite">{{ t.settings.conflictOverwrite }}</option>
         </select>
-        <span class="hint">Pour les envois et téléchargements. La synchronisation a ses propres choix.</span>
+        <span class="hint">{{ t.settings.conflictHint }}</span>
       </label>
 
       <label class="check">
         <input v-model="draft.show_hidden_files" type="checkbox" />
-        Afficher les fichiers cachés (nom commençant par un point)
+        {{ t.settings.hidden }}
       </label>
 
       <p v-if="failed" class="error" role="alert">
-        Les paramètres n'ont pas pu être enregistrés. Le détail est dans le journal.
+        {{ t.settings.saveFailed }}
       </p>
     </form>
 
     <template #footer>
-      <button class="btn" @click="emit('close')">Annuler</button>
-      <button class="btn btn-primary" :disabled="saving" @click="onSave">Enregistrer</button>
+      <button class="btn" @click="emit('close')">{{ t.common.cancel }}</button>
+      <button class="btn btn-primary" :disabled="saving" @click="onSave">{{ t.common.save }}</button>
     </template>
   </BaseDialog>
 </template>

@@ -1,5 +1,7 @@
 // Mirror types from Rust backend (src-tauri/src/)
 
+import type { BackendError } from './utils/errors';
+
 export type ProtocolType = 'Sftp' | 'Scp' | 'Ftp' | 'Ftps' | 'WebDav' | 'WebDavs';
 
 export type AuthMethod =
@@ -84,7 +86,8 @@ export interface TransferEvent {
   destination: string | null;
   total_bytes: number;
   transferred_bytes: number;
-  error: string | null;
+  errors: BackendError[];
+  more_errors: number;
 }
 
 export type PaneSide = 'local' | 'remote';
@@ -125,7 +128,7 @@ export interface SyncAction {
 
 export interface SyncPlan {
   actions: SyncAction[];
-  problems: string[];
+  problems: BackendError[];
   skipped_links: string[];
 }
 
@@ -145,6 +148,7 @@ export type DefaultConflict = 'Ask' | 'Overwrite' | 'Skip' | 'Rename';
 
 /// Mirrors `AppConfig` in src-tauri/src/config/mod.rs.
 export interface AppConfig {
+  /// "system", or a language with a dictionary in src/i18n.
   language: string;
   theme: Theme;
   /// Applies from the next connection.
@@ -157,7 +161,7 @@ export interface AppConfig {
 export interface ProbeResult {
   initial_path: string;
   /// The login worked but the starting folder could not be listed.
-  directory_error: string | null;
+  directory_error: BackendError | null;
 }
 
 /// A remote file open in a local application (src-tauri/src/edit.rs).

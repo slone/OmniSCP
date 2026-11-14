@@ -1,12 +1,39 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, useId, watch } from 'vue';
 import TransferQueue from './TransferQueue.vue';
 import LogsPanel from './LogsPanel.vue';
 import EditsPanel from './EditsPanel.vue';
 import { useEditsStore } from '../../stores/edits';
+import { t } from '../../i18n';
 
 const edits = useEditsStore();
-const activeTab = ref<'queue' | 'logs' | 'edits'>('queue');
+type Tab = 'queue' | 'logs' | 'edits';
+const activeTab = ref<Tab>('queue');
+const ids = useId();
+
+const tabs = computed(() => {
+  const list: { key: Tab; label: string; alert?: boolean }[] = [
+    { key: 'queue', label: t.bottom.queue },
+    { key: 'logs', label: t.bottom.logs },
+  ];
+  if (edits.files.length > 0) {
+    list.push({
+      key: 'edits',
+      label: t.bottom.edits(edits.files.length),
+      alert: edits.files.some((f) => f.state === 'conflict' || f.state === 'error'),
+    });
+  }
+  return list;
+});
+
+/// Arrow keys move between tabs, as in other tab lists.
+function onTabKeydown(e: KeyboardEvent) {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  const keys = tabs.value.map((tab) => tab.key);
+  const next = (keys.indexOf(activeTab.value) + (e.key === 'ArrowRight' ? 1 : -1) + keys.length) % keys.length;
+  activeTab.value = keys[next];
+  document.getElementById(`${ids}-tab-${keys[next]}`)?.focus();
+}
 
 // A refused save must not go unnoticed.
 watch(() => edits.attention, () => (activeTab.value = 'edits'));
@@ -21,31 +48,25 @@ watch(
 
 <template>
   <div class="bottom-panel">
-    <div class="panel-tabs">
+    <div class="panel-tabs" role="tablist" :aria-label="t.bottom.label" @keydown="onTabKeydown">
       <button
-        :class="['tab-btn', { active: activeTab === 'queue' }]"
-        @click="activeTab = 'queue'"
+        v-for="tab in tabs"
+        :id="`${ids}-tab-${tab.key}`"
+        :key="tab.key"
+        role="tab"
+        :aria-selected="activeTab === tab.key"
+        :aria-controls="`${ids}-panel`"
+        :tabindex="activeTab === tab.key ? 0 : -1"
+        :class="['tab-btn', { active: activeTab === tab.key }]"
+        @click="activeTab = tab.key"
       >
-        File d'attente
-      </button>
-      <button
-        :class="['tab-btn', { active: activeTab === 'logs' }]"
-        @click="activeTab = 'logs'"
-      >
-        Journal
-      </button>
-      <button
-        v-if="edits.files.length > 0"
-        :class="['tab-btn', { active: activeTab === 'edits' }]"
-        @click="activeTab = 'edits'"
-      >
-        En édition ({{ edits.files.length }})
-        <span v-if="edits.files.some((f) => f.state === 'conflict' || f.state === 'error')" class="tab-alert" aria-label="à vérifier">!</span>
+        {{ tab.label }}
+        <span v-if="tab.alert" class="tab-alert" role="img" :aria-label="t.bottom.needsAttention">!</span>
       </button>
       <div class="tab-spacer" />
     </div>
 
-    <div class="panel-content">
+    <div :id="`${ids}-panel`" class="panel-content" role="tabpanel" :aria-labelledby="`${ids}-tab-${activeTab}`">
       <TransferQueue v-if="activeTab === 'queue'" />
       <LogsPanel v-if="activeTab === 'logs'" />
       <EditsPanel v-if="activeTab === 'edits'" />

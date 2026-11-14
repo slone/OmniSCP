@@ -9,7 +9,7 @@ use tauri::{Emitter, Manager};
 
 use crate::edit::{self, EditInfo, Edits};
 use crate::config::{AppConfig, AuthMethod, Profile, credentials, exchange};
-use crate::error::OmniError;
+use crate::error::{Msg, OmniError};
 use crate::logging::{self, LogEntry};
 use crate::protocols::{
     AccountNames, ConnectParams, FileEntry, ProbeResult, Protocol, for_profile, probe, remote_join, remote_parent, sort_entries, validate_file_name,
@@ -55,7 +55,7 @@ pub fn get_home_dir(app_handle: tauri::AppHandle) -> Result<String, OmniError> {
     let home = app_handle
         .path()
         .home_dir()
-        .map_err(|e| OmniError::Config(format!("Could not determine home directory: {e}")))?;
+        .map_err(|e| OmniError::Config(Msg::new("app.noHome").detail(e)))?;
     Ok(home.to_string_lossy().into_owned())
 }
 
@@ -194,7 +194,7 @@ pub fn set_local_permissions(path: String, mode: u32) -> Result<(), OmniError> {
     #[cfg(not(unix))]
     {
         let _ = (path, mode);
-        Err(OmniError::Protocol("Unix permissions do not exist on this system".into()))
+        Err(OmniError::Protocol(Msg::new("local.noUnixPermissions")))
     }
 }
 
@@ -223,7 +223,7 @@ pub async fn remote_folder_size(
         let guard = lock(&state.0)?;
         let active = guard
             .as_ref()
-            .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+            .ok_or_else(|| OmniError::Protocol(Msg::new("conn.notConnected")))?;
         active.cancel_size.store(false, Ordering::Relaxed);
         (active.params.clone(), Arc::clone(&active.cancel_size))
     };
@@ -266,7 +266,7 @@ pub fn load_profiles(app_handle: tauri::AppHandle) -> Result<Vec<Profile>, OmniE
     let config_dir = app_handle
         .path()
         .app_config_dir()
-        .map_err(|e| OmniError::Config(e.to_string()))?;
+        .map_err(app_dir_err)?;
     let path = config_dir.join("profiles.json");
 
     if !path.exists() {
@@ -275,7 +275,7 @@ pub fn load_profiles(app_handle: tauri::AppHandle) -> Result<Vec<Profile>, OmniE
 
     let data = std::fs::read_to_string(&path)?;
     let profiles: Vec<Profile> =
-        serde_json::from_str(&data).map_err(|e| OmniError::Config(e.to_string()))?;
+        serde_json::from_str(&data).map_err(|e| OmniError::Config(Msg::new("profiles.invalid").with("path", path.display()).detail(e)))?;
     Ok(profiles)
 }
 
@@ -287,14 +287,14 @@ pub fn save_profiles(
     let config_dir = app_handle
         .path()
         .app_config_dir()
-        .map_err(|e| OmniError::Config(e.to_string()))?;
+        .map_err(app_dir_err)?;
     std::fs::create_dir_all(&config_dir)?;
 
     let tmp_path = config_dir.join("profiles.json.tmp");
     let final_path = config_dir.join("profiles.json");
 
     let data = serde_json::to_string_pretty(&profiles)
-        .map_err(|e| OmniError::Config(e.to_string()))?;
+        .map_err(|e| OmniError::Config(Msg::new("profiles.encode").detail(e)))?;
     std::fs::write(&tmp_path, data)?;
     std::fs::rename(&tmp_path, &final_path)?;
 
@@ -368,7 +368,7 @@ pub async fn connect(
     let config_dir = app_handle
         .path()
         .app_config_dir()
-        .map_err(|e| OmniError::Config(e.to_string()))?;
+        .map_err(app_dir_err)?;
     let known_hosts_path = config_dir.join("known_hosts");
     // Unreadable settings must not prevent connecting.
     let workers = AppConfig::load(&config_dir.join(SETTINGS_FILE))
@@ -441,7 +441,7 @@ pub async fn test_connection(
     let known_hosts_path = app_handle
         .path()
         .app_config_dir()
-        .map_err(|e| OmniError::Config(e.to_string()))?
+        .map_err(app_dir_err)?
         .join("known_hosts");
     let params = ConnectParams {
         profile,
@@ -472,7 +472,7 @@ fn active_edits(state: &ConnectionState) -> Result<Arc<Edits>, OmniError> {
     let guard = lock(&state.0)?;
     let active = guard
         .as_ref()
-        .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+        .ok_or_else(|| OmniError::Protocol(Msg::new("conn.notConnected")))?;
     Ok(Arc::clone(&active.edits))
 }
 
@@ -489,14 +489,14 @@ pub async fn edit_remote_file(
     let root = app_handle
         .path()
         .app_cache_dir()
-        .map_err(|e| OmniError::Config(e.to_string()))?
+        .map_err(app_dir_err)?
         .join(EDITS_DIR);
     let edits = active_edits(&state)?;
     let info = with_connection(&state, move |conn| edits.open(conn, &path, &root, generate_id())).await?;
     app_handle
         .opener()
         .open_path(&info.local_path, None::<&str>)
-        .map_err(|e| OmniError::Config(format!("No application could open {}: {e}", info.local_path)))?;
+        .map_err(|e| OmniError::Config(Msg::new("edit.noApp").with("path", &info.local_path).detail(e)))?;
     Ok(info)
 }
 
@@ -525,7 +525,7 @@ fn settings_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, OmniError> {
     let dir = app_handle
         .path()
         .app_config_dir()
-        .map_err(|e| OmniError::Config(e.to_string()))?;
+        .map_err(app_dir_err)?;
     Ok(dir.join(SETTINGS_FILE))
 }
 
@@ -576,7 +576,7 @@ where
         let guard = lock(&state.0)?;
         let active = guard
             .as_ref()
-            .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+            .ok_or_else(|| OmniError::Protocol(Msg::new("conn.notConnected")))?;
         Arc::clone(&active.conn)
     };
     run_blocking(move || {
@@ -614,10 +614,10 @@ pub async fn rename_remote(
     validate_file_name(&new_name)?;
     with_connection(&state, move |conn| {
         let parent = remote_parent(&path)
-            .ok_or_else(|| OmniError::Protocol("Cannot rename the root directory".into()))?;
+            .ok_or_else(|| OmniError::Protocol(Msg::new("rename.root")))?;
         let target = remote_join(&parent, new_name.trim());
         if conn.exists(&target) {
-            return Err(OmniError::Protocol(format!("{target} already exists")));
+            return Err(OmniError::Protocol(Msg::new("rename.exists").with("path", &target)));
         }
         conn.rename(&path, &target)?;
         Ok(target)
@@ -631,7 +631,7 @@ pub async fn delete_remote(
     path: String,
 ) -> Result<(), OmniError> {
     if remote_parent(&path).is_none() {
-        return Err(OmniError::Protocol("Refusing to delete the root directory".into()));
+        return Err(OmniError::Protocol(Msg::new("delete.root")));
     }
     with_connection(&state, move |conn| conn.delete(&path)).await
 }
@@ -650,10 +650,10 @@ pub fn rename_local(path: String, new_name: String) -> Result<String, OmniError>
     let from = Path::new(&path);
     let parent = from
         .parent()
-        .ok_or_else(|| OmniError::Config("Cannot rename the root directory".into()))?;
+        .ok_or_else(|| OmniError::Config(Msg::new("rename.root")))?;
     let target = parent.join(new_name.trim());
     if target.symlink_metadata().is_ok() {
-        return Err(OmniError::Config(format!("{} already exists", target.display())));
+        return Err(OmniError::Config(Msg::new("rename.exists").with("path", target.display())));
     }
     std::fs::rename(from, &target).map_err(|e| OmniError::io_context(from.display(), e))?;
     Ok(target.to_string_lossy().into_owned())
@@ -664,7 +664,7 @@ pub async fn delete_local(path: String) -> Result<(), OmniError> {
     run_blocking(move || {
         let target = Path::new(&path);
         if target.parent().is_none() {
-            return Err(OmniError::Config("Refusing to delete the root directory".into()));
+            return Err(OmniError::Config(Msg::new("delete.root")));
         }
         // symlink_metadata: a symlink to a directory is removed as a link, never followed.
         let meta = target
@@ -696,7 +696,7 @@ pub fn enqueue_transfer(
     let guard = lock(&state.0)?;
     let active = guard
         .as_ref()
-        .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+        .ok_or_else(|| OmniError::Protocol(Msg::new("conn.notConnected")))?;
     let id = generate_id();
     active.transfers.enqueue(TransferRequest {
         id: id.clone(),
@@ -755,7 +755,7 @@ pub async fn compare_sync(
         let guard = lock(&state.0)?;
         let active = guard
             .as_ref()
-            .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+            .ok_or_else(|| OmniError::Protocol(Msg::new("conn.notConnected")))?;
         active.cancel_compare.store(false, Ordering::Relaxed);
         (active.params.clone(), Arc::clone(&active.cancel_compare))
     };
@@ -791,7 +791,7 @@ pub fn start_sync(
     let guard = lock(&state.0)?;
     let active = guard
         .as_ref()
-        .ok_or_else(|| OmniError::Protocol("Not connected".into()))?;
+        .ok_or_else(|| OmniError::Protocol(Msg::new("conn.notConnected")))?;
     let id = generate_id();
     active.transfers.enqueue_sync(SyncRequest {
         id: id.clone(),
@@ -806,7 +806,7 @@ fn log_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, OmniError> {
     let dir = app_handle
         .path()
         .app_log_dir()
-        .map_err(|e| OmniError::Config(e.to_string()))?;
+        .map_err(app_dir_err)?;
     Ok(dir.join("omniscp.log"))
 }
 
@@ -833,7 +833,7 @@ pub fn export_logs(app_handle: tauri::AppHandle) -> Result<String, OmniError> {
     let dir = app_handle
         .path()
         .download_dir()
-        .map_err(|e| OmniError::Config(e.to_string()))?;
+        .map_err(app_dir_err)?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -848,7 +848,7 @@ fn lock(
 ) -> Result<MutexGuard<'_, Option<ActiveConnection>>, OmniError> {
     shared
         .lock()
-        .map_err(|e| OmniError::Protocol(format!("Failed to acquire connection lock: {e}")))
+        .map_err(|e| OmniError::Protocol(Msg::new("app.internal").detail(e)))
 }
 
 /// Runs blocking network I/O off the main thread.
@@ -859,5 +859,10 @@ where
 {
     tauri::async_runtime::spawn_blocking(f)
         .await
-        .map_err(|e| OmniError::Protocol(format!("Background task failed: {e}")))?
+        .map_err(|e| OmniError::Protocol(Msg::new("app.internal").detail(e)))?
+}
+
+/// The system did not say where the app's files go.
+fn app_dir_err(err: tauri::Error) -> OmniError {
+    OmniError::Config(Msg::new("app.noFolder").detail(err))
 }
