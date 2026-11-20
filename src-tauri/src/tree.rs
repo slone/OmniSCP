@@ -136,7 +136,9 @@ mod tests {
 
         let whole = local_tree_size(&[root.to_string_lossy().into_owned()], &cancel).unwrap();
         // The folder link is not followed; the broken link counts as its own 4 bytes.
-        assert_eq!((whole.bytes, whole.files, whole.folders), (13, 4, 3));
+        // Both links exist only on Unix.
+        let expected = if cfg!(unix) { (13, 4, 3) } else { (9, 3, 3) };
+        assert_eq!((whole.bytes, whole.files, whole.folders), expected);
 
         let missing = local_tree_size(&[root.join("nope").to_string_lossy().into_owned()], &cancel).unwrap();
         assert_eq!(missing.unreadable, 1);
