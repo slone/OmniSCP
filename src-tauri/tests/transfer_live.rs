@@ -751,16 +751,19 @@ fn moving_removes_the_source_only_when_everything_was_copied() {
     assert_eq!(std::fs::read(back.join("tree/sub/b.txt")).unwrap(), b"bbb");
 
     // One unreadable file: the copy is partial, so nothing at all is removed.
-    let partial = h.tmp.join("partial");
-    write(&partial.join("ok.txt"), b"ok");
-    write(&partial.join("locked.txt"), b"locked");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(partial.join("locked.txt"), std::fs::Permissions::from_mode(0o000)).unwrap();
-    let id = h.enqueue_with(TransferDirection::Upload, partial.to_str().unwrap(), &base, ConflictStrategy::Skip, true);
-    let event = h.wait_finished(&id);
-    std::fs::set_permissions(partial.join("locked.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert_eq!(event.status, TransferStatus::CompletedWithWarnings);
-    assert!(partial.join("ok.txt").exists() && partial.join("locked.txt").exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let partial = h.tmp.join("partial");
+        write(&partial.join("ok.txt"), b"ok");
+        write(&partial.join("locked.txt"), b"locked");
+        std::fs::set_permissions(partial.join("locked.txt"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let id = h.enqueue_with(TransferDirection::Upload, partial.to_str().unwrap(), &base, ConflictStrategy::Skip, true);
+        let event = h.wait_finished(&id);
+        std::fs::set_permissions(partial.join("locked.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(event.status, TransferStatus::CompletedWithWarnings);
+        assert!(partial.join("ok.txt").exists() && partial.join("locked.txt").exists());
+    }
     h.cleanup();
 }
 

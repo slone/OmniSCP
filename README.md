@@ -1,5 +1,7 @@
 # OmniSCP
 
+[![CI](https://github.com/slone/OmniSCP/actions/workflows/ci.yml/badge.svg)](https://github.com/slone/OmniSCP/actions/workflows/ci.yml)
+
 A cross-platform file transfer client for SFTP and SCP, in the spirit of WinSCP: a local and a remote pane side by side, a transfer queue, folder synchronization with a preview, and connection profiles whose passwords stay in the system keychain.
 
 Built with [Tauri 2](https://tauri.app) (Rust) and Vue 3. The interface is in French and English.
@@ -87,6 +89,8 @@ cargo clippy           # lints
 ```
 
 Tests that need a real server are ignored by default. They run against Docker containers: an SFTP server, and two SCP servers whose `ls` differ (Debian and Alpine). How to start them and which variables to set is written at the top of each file in `src-tauri/tests/`.
+
+GitHub Actions runs the unit tests and Clippy on Linux, macOS and Windows, and the live tests against those servers on Linux (`.github/workflows/ci.yml`).
 
 ## Where things are kept
 

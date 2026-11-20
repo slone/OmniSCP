@@ -31,6 +31,8 @@ cargo clippy                 # Lint backend
 
 Tests needing a real server are `#[ignore]`d. Their setup is at the top of each file in `src-tauri/tests/`: `sftp_live.rs`, `scp_live.rs` (run on both the Debian and Alpine servers, whose `ls` differ) and `transfer_live.rs` (queue and sync, over either protocol).
 
+GitHub Actions (`.github/workflows/ci.yml`) builds the frontend and runs `cargo clippy -- -D warnings` and `cargo test` on Linux, macOS and Windows, and the ignored live tests on Linux against Docker servers. A Clippy warning fails the build, including one that only shows on another platform.
+
 ## Project Structure
 
 ```
