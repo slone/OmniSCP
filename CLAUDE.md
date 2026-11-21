@@ -33,6 +33,8 @@ Tests needing a real server are `#[ignore]`d. Their setup is at the top of each 
 
 GitHub Actions (`.github/workflows/ci.yml`) builds the frontend and runs `cargo clippy -- -D warnings` and `cargo test` on Linux, macOS and Windows, and the ignored live tests on Linux against Docker servers. A Clippy warning fails the build, including one that only shows on another platform.
 
+A tag `vX.Y.Z` runs `.github/workflows/release.yml`, which builds the installers and attaches them to a draft release. The tag must match the version in `tauri.conf.json`. Signing is driven by repository secrets and turns itself off when they are missing (`RELEASING.md`).
+
 ## Project Structure
 
 ```
