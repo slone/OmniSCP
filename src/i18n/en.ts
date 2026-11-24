@@ -200,6 +200,7 @@ const en: typeof fr = {
     modified: 'Modified',
     permissions: 'Permissions',
     owner: 'Owner',
+    resizeHint: 'Drag to resize, double-click to fit the content',
     parent: 'Parent folder',
     ownerTitle: (user: string, group?: string) => `Owner: ${user}${group === undefined ? '' : ` — group: ${group}`}`,
     connectFailed: 'Connection failed',

@@ -160,6 +160,12 @@ textarea,
   white-space: nowrap;
 }
 
+/* While a column is resized. */
+.col-resizing,
+.col-resizing * {
+  cursor: col-resize !important;
+}
+
 /* While files are dragged between the panes. */
 .pane-dragging,
 .pane-dragging * {

@@ -200,6 +200,7 @@ const fr = {
     modified: 'Modifié',
     permissions: 'Droits',
     owner: 'Propriétaire',
+    resizeHint: 'Glisser pour redimensionner, double-cliquer pour ajuster au contenu',
     parent: 'Dossier parent',
     ownerTitle: (user: string, group?: string) =>
       `Propriétaire : ${user}${group === undefined ? '' : ` — groupe : ${group}`}`,
