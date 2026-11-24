@@ -7,6 +7,13 @@ const plural = (n: number, one: string, other: string) => (n <= 1 ? one : other)
 const num = (n: number) => n.toLocaleString('fr-FR');
 
 const fr = {
+  layout: {
+    sidebar: 'Largeur de la liste des profils',
+    panes: 'Partage entre les panneaux local et distant',
+    pixels: (n: number) => `${n} pixels`,
+    share: (percent: number) => `Panneau local : ${percent} %`,
+  },
+
   common: {
     cancel: 'Annuler',
     close: 'Fermer',

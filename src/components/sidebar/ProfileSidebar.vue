@@ -396,7 +396,6 @@ async function onExchangeConfirm(list: Profile[]) {
   width: 100%;
   height: 100%;
   background: var(--color-surface);
-  border-right: 1px solid var(--color-border);
   overflow: hidden;
 }
 

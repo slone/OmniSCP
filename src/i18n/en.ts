@@ -8,6 +8,13 @@ const plural = (n: number, one: string, other: string) => (n === 1 ? one : other
 const num = (n: number) => n.toLocaleString('en-US');
 
 const en: typeof fr = {
+  layout: {
+    sidebar: 'Width of the profile list',
+    panes: 'Split between the local and remote panes',
+    pixels: (n: number) => `${n} pixels`,
+    share: (percent: number) => `Local pane: ${percent}%`,
+  },
+
   common: {
     cancel: 'Cancel',
     close: 'Close',
