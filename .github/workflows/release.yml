@@ -8,7 +8,6 @@ name: Release
 on:
   push:
     tags: ['v*']
-    branches: [feature/release]  # TEMPORARY: test run before the merge
   workflow_dispatch:
 
 permissions:
@@ -135,7 +134,7 @@ jobs:
           releaseDraft: true
           args: ${{ matrix.args }} ${{ env.SIGNING_ARGS }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: omniscp-${{ matrix.name }}
           if-no-files-found: error
