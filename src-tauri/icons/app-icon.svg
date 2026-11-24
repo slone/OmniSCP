@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- OmniSCP: two panes and the transfers between them. Regenerate every
+       size with `npm run tauri icon src-tauri/icons/app-icon.svg`. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f6fdf"/>
+      <stop offset="1" stop-color="#173c8c"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
+  <rect x="180" y="250" width="270" height="524" rx="44" fill="#ffffff" opacity="0.95"/>
+  <rect x="574" y="250" width="270" height="524" rx="44" fill="#ffffff" opacity="0.95"/>
+  <g fill="#2f6fdf">
+    <rect x="222" y="320" width="186" height="34" rx="17"/>
+    <rect x="222" y="390" width="150" height="34" rx="17"/>
+    <rect x="222" y="460" width="170" height="34" rx="17"/>
+    <rect x="616" y="530" width="186" height="34" rx="17"/>
+    <rect x="616" y="600" width="150" height="34" rx="17"/>
+    <rect x="616" y="670" width="170" height="34" rx="17"/>
+  </g>
+  <g fill="#ffb02e" stroke="#173c8c" stroke-width="14" stroke-linejoin="round">
+    <path d="M400 390 H570 V340 L680 430 L570 520 V470 H400 Z"/>
+    <path d="M624 554 H454 V504 L344 594 L454 684 V634 H624 Z"/>
+  </g>
+</svg>

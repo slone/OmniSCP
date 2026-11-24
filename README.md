@@ -6,7 +6,13 @@ A cross-platform file transfer client for SFTP and SCP, in the spirit of WinSCP:
 
 Built with [Tauri 2](https://tauri.app) (Rust) and Vue 3. The interface is in French and English.
 
-> **Status: early (0.1).** Developed and tested on macOS. Linux and Windows should build, but have not been tested yet, and there are no signed installers so far.
+> **Status: early (0.1).** Developed and tested on macOS. Linux and Windows build and pass the tests in CI, but have not been tried by hand yet.
+
+## Download
+
+Installers for macOS (universal), Windows (`.msi` or setup `.exe`) and Linux (`.deb`, `.rpm`, `.AppImage`) are attached to each [release](https://github.com/slone/OmniSCP/releases).
+
+They are not signed yet. On macOS, the first launch is refused: allow it under System Settings → Privacy & Security, "Open Anyway". On Windows, SmartScreen warns first: choose "More info", then "Run anyway".
 
 ## Features
 
@@ -111,7 +117,7 @@ src-tauri/src/       Rust backend
   commands/          commands called by the interface
 ```
 
-The functional specification, in French, is in [`cahier-des-charges.md`](cahier-des-charges.md).
+How a release is made and signed is in [`RELEASING.md`](RELEASING.md). The functional specification, in French, is in [`cahier-des-charges.md`](cahier-des-charges.md).
 
 ## License
 
