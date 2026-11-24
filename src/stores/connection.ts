@@ -38,6 +38,10 @@ export const useConnectionStore = defineStore('connection', () => {
       logStore.addLog('Info', t.connection.log, t.log.ok, t.log.connectedTo(profile.name));
       await navigateTo(initialPath);
     } catch (err) {
+      if (isBackendError(err) && err.code === 'credentials.missing') {
+        // Not a failure either: the caller asks for the password.
+        throw err;
+      }
       if (isBackendError(err) && err.kind === 'HostKeyUnknown') {
         // Not a failure yet: the caller asks the user to confirm the fingerprint.
         logStore.addLog('Warning', t.connection.log, t.log.unknownKey, `${profile.name} — ${err.fingerprint}`);

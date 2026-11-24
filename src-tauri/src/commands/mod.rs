@@ -356,11 +356,15 @@ pub async fn connect(
     password: Option<String>,
     trusted_fingerprint: Option<String>,
 ) -> Result<String, OmniError> {
+    // Read once, here: every read of the keychain may ask the user to allow it.
     let password = match password {
         Some(p) => Some(p),
         None if profile.save_password && needs_secret(&profile.auth_method) => {
             let id = profile.id.clone();
-            run_blocking(move || credentials::get(&id)).await?
+            match run_blocking(move || credentials::get(&id)).await? {
+                Some(p) => Some(p),
+                None => return Err(OmniError::Auth(Msg::new("credentials.missing"))),
+            }
         }
         None => None,
     };

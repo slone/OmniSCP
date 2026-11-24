@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { useProfilesStore } from '../stores/profiles';
 import { useConnectionStore } from '../stores/connection';
 import { useLogStore } from '../stores/logs';
@@ -55,6 +54,9 @@ async function attempt(a: Attempt, trustedFingerprint?: string) {
   } catch (err) {
     if (isBackendError(err) && err.kind === 'HostKeyUnknown' && err.fingerprint) {
       hostKeyPrompt.value = { ...a, fingerprint: err.fingerprint };
+    } else if (isBackendError(err) && err.code === 'credentials.missing') {
+      logStore.addLog('Warning', t.connection.keychainLog, t.connection.keychainMissing, t.connection.noSavedPassword(a.profile.name));
+      promptPassword(a.profile);
     } else if (isBackendError(err) && err.kind === 'Auth' && a.password === undefined && needsSecret(a.profile)) {
       promptPassword(a.profile, t.connection.savedPasswordRefused);
     }
@@ -83,20 +85,11 @@ async function onConnect() {
   const profile = profileStore.selectedProfile;
   if (!profile) return;
 
-  if (!needsSecret(profile)) {
-    attempt({ profile, remember: false });
-    return;
-  }
-
-  const saved =
-    profile.save_password &&
-    (await invoke<boolean>('has_saved_password', { profileId: profile.id }).catch(() => false));
-  if (saved) {
+  // A saved password is read by the backend while connecting, not checked
+  // first: each keychain read may ask the user's permission.
+  if (!needsSecret(profile) || profile.save_password) {
     attempt({ profile, remember: false });
   } else {
-    if (profile.save_password) {
-      logStore.addLog('Warning', t.connection.keychainLog, t.connection.keychainMissing, t.connection.noSavedPassword(profile.name));
-    }
     promptPassword(profile);
   }
 }

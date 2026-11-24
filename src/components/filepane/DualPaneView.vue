@@ -36,6 +36,7 @@ const dropTarget = computed<PaneSide | null>(() => {
 /// the remote folder. Tauri hands over their paths and keeps the webview from
 /// opening them itself.
 let stopListening: (() => void) | undefined;
+const IS_WINDOWS = navigator.userAgent.includes('Windows');
 
 async function listenForSystemDrops() {
   stopListening = await getCurrentWebview().onDragDropEvent(({ payload }) => {
@@ -43,8 +44,9 @@ async function listenForSystemDrops() {
       dragState.over = null;
       return;
     }
-    // Tauri gives physical pixels; the page works in CSS pixels.
-    const scale = window.devicePixelRatio || 1;
+    // Tauri calls the position physical, but only Windows gives device
+    // pixels; macOS and Linux already give CSS pixels.
+    const scale = IS_WINDOWS ? window.devicePixelRatio || 1 : 1;
     dragState.over = paneAt(payload.position.x / scale, payload.position.y / scale);
     if (payload.type !== 'drop') return;
     const target = dropTarget.value;

@@ -515,6 +515,7 @@ const en: typeof fr = {
     'connectionLost': () => 'The connection to the server was lost',
     'conn.notConnected': () => 'Not connected',
     'credentials.failed': () => 'System keychain unavailable',
+    'credentials.missing': () => 'No password saved in the keychain',
     'delete.root': () => 'The root cannot be deleted',
     'edit.changedOnServer': (p: P) => `${p.path} was changed on the server since it was opened`,
     'edit.goneFromServer': (p: P) => `${p.path} no longer exists on the server`,
