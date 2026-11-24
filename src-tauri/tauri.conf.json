@@ -15,7 +15,7 @@
         "title": "OmniSCP",
         "width": 1200,
         "height": 800,
-        "dragDropEnabled": false,
+        "dragDropEnabled": true,
         "minWidth": 900,
         "minHeight": 560
       }

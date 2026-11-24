@@ -526,6 +526,7 @@ const fr = {
     'connectionLost': () => 'La connexion au serveur a été perdue',
     'conn.notConnected': () => 'Pas de connexion',
     'credentials.failed': () => 'Trousseau du système inaccessible',
+    'credentials.missing': () => 'Aucun mot de passe enregistré dans le trousseau',
     'delete.root': () => 'La racine ne peut pas être supprimée',
     'edit.changedOnServer': (p: P) => `${p.path} a été modifié sur le serveur depuis son ouverture`,
     'edit.goneFromServer': (p: P) => `${p.path} n’existe plus sur le serveur`,

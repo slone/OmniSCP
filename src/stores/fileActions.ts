@@ -175,7 +175,12 @@ export const useFileActionsStore = defineStore('fileActions', () => {
 
   /// Queues the selection of `from` into the current directory of the other pane,
   /// asking what to do for names that already exist there.
-  async function transfer(from: PaneSide, entries: FileEntry[] = selectionOf(from), move = false) {
+  /// `entries` may also be files dropped from outside the app, known only by path and name.
+  async function transfer(
+    from: PaneSide,
+    entries: Pick<FileEntry, 'path' | 'name'>[] = selectionOf(from),
+    move = false,
+  ) {
     if (!connected.value || entries.length === 0) return;
     const to: PaneSide = from === 'local' ? 'remote' : 'local';
     const destDir = pane(to).currentPath;

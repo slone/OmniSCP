@@ -140,6 +140,12 @@ body,
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* While files are dragged between the panes. */
+.pane-dragging,
+.pane-dragging * {
+  cursor: copy !important;
+}
 </style>
 
 <style scoped>

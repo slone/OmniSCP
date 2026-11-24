@@ -25,6 +25,7 @@ They are not signed yet. On macOS, the first launch is refused: allow it under S
 - A background queue with several transfers at once, each on its own session, so browsing never waits
 - Pause and resume a single transfer or the whole queue (a paused transfer keeps its connection), cancel, and retry only what is missing
 - Copy with F5 or by dragging between panes; move with F6 (originals are deleted only if everything was copied)
+- Drop files or folders from Finder, Explorer or your file manager onto the remote pane to upload them
 - When a file already exists: ask, overwrite, skip or rename, with "apply to all"
 - Files are written to a temporary name and swapped in when complete, and keep their modification date
 

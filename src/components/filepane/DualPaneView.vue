@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import FilePane from './FilePane.vue';
 import { useLocalFilesStore } from '../../stores/localFiles';
 import { useConnectionStore } from '../../stores/connection';
 import { useFileActionsStore } from '../../stores/fileActions';
 import type { PaneSide } from '../../types';
 import { t } from '../../i18n';
+import { baseName, dragState, paneAt } from '../../utils/paneDrag';
 
 const localStore = useLocalFilesStore();
 const connectionStore = useConnectionStore();
@@ -21,9 +23,48 @@ function onDrop(from: PaneSide, paths: string[]) {
   actions.transfer(from, store.files.filter((f) => wanted.has(f.path)));
 }
 
+/// The pane that would receive what is being dragged, if any.
+const dropTarget = computed<PaneSide | null>(() => {
+  const over = dragState.over;
+  if (!over) return null;
+  if (dragState.drag) return over !== dragState.drag.from ? over : null;
+  // From the file manager: only an upload makes sense.
+  return over === 'remote' && connectionStore.connected ? 'remote' : null;
+});
+
+/// Files and folders dropped from the system's file manager are uploaded to
+/// the remote folder. Tauri hands over their paths and keeps the webview from
+/// opening them itself.
+let stopListening: (() => void) | undefined;
+const IS_WINDOWS = navigator.userAgent.includes('Windows');
+
+async function listenForSystemDrops() {
+  stopListening = await getCurrentWebview().onDragDropEvent(({ payload }) => {
+    if (payload.type === 'leave') {
+      dragState.over = null;
+      return;
+    }
+    // Tauri calls the position physical, but only Windows gives device
+    // pixels; macOS and Linux already give CSS pixels.
+    const scale = IS_WINDOWS ? window.devicePixelRatio || 1 : 1;
+    dragState.over = paneAt(payload.position.x / scale, payload.position.y / scale);
+    if (payload.type !== 'drop') return;
+    const target = dropTarget.value;
+    dragState.over = null;
+    if (target === 'remote') {
+      actions.transfer('local', payload.paths.map((path) => ({ path, name: baseName(path) })));
+    }
+  });
+}
+
 onMounted(() => {
   localStore.initialize();
+  listenForSystemDrops().catch(() => {
+    // Outside Tauri (the frontend alone in a browser) there is nothing to listen to.
+  });
 });
+
+onUnmounted(() => stopListening?.());
 </script>
 
 <template>
@@ -40,6 +81,7 @@ onMounted(() => {
         :can-go-back="localStore.canGoBack"
         :error="localStore.error"
         :can-go-forward="localStore.canGoForward"
+        :drop-highlight="dropTarget === 'local'"
         @navigate="localStore.navigateTo"
         @navigate-up="localStore.navigateUp"
         @back="localStore.goBack"
@@ -69,6 +111,7 @@ onMounted(() => {
           :can-go-back="connectionStore.canGoBack"
           :error="connectionStore.error"
           :can-go-forward="connectionStore.canGoForward"
+          :drop-highlight="dropTarget === 'remote'"
           @navigate="connectionStore.navigateTo"
           @navigate-up="connectionStore.navigateUp"
           @back="connectionStore.goBack"
@@ -94,10 +137,39 @@ onMounted(() => {
         <span v-else class="placeholder-text">{{ t.panes.notConnected }}</span>
       </div>
     </div>
+    <div
+      v-if="dragState.drag"
+      :class="['drag-label', { refused: !dropTarget }]"
+      :style="{ transform: `translate(${dragState.drag.x + 14}px, ${dragState.drag.y + 10}px)` }"
+      aria-hidden="true"
+    >
+      {{ dragState.drag.label }}
+    </div>
   </div>
 </template>
 
 <style scoped>
+.drag-label {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  max-width: 280px;
+  padding: 3px 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--color-accent);
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.drag-label.refused {
+  opacity: 0.6;
+}
+
 .dual-pane {
   display: flex;
   height: 100%;
