@@ -10,11 +10,28 @@ pub mod tree;
 
 use commands::ConnectionState;
 
+/// Whether the webview may load this URL: only the app's own pages. A file
+/// dropped on a webview, or a stray link, would otherwise replace the interface.
+fn is_app_url(url: &tauri::Url) -> bool {
+    match (url.scheme(), url.host_str()) {
+        ("tauri", Some("localhost")) => true,
+        ("http" | "https", Some("tauri.localhost")) => true,
+        // Vite's dev server.
+        ("http", Some("localhost")) => cfg!(debug_assertions) && url.port() == Some(1420),
+        _ => false,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("navigation-guard")
+                .on_navigation(|_webview, url| is_app_url(url))
+                .build(),
+        )
         .manage(ConnectionState::default())
         .setup(|app| {
             use tauri::Manager;
@@ -71,4 +88,21 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_app_url;
+
+    #[test]
+    fn only_the_app_itself_can_be_loaded() {
+        let ok = |u: &str| is_app_url(&u.parse().unwrap());
+        assert!(ok("tauri://localhost/index.html"));
+        assert!(ok("http://tauri.localhost/"));
+        assert!(ok("http://localhost:1420/"));
+        assert!(!ok("file:///Users/me/notes.txt"));
+        assert!(!ok("https://example.com/"));
+        assert!(!ok("http://localhost:8080/"));
+        assert!(!ok("tauri://evil/"));
+    }
 }

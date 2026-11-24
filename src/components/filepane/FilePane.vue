@@ -19,6 +19,7 @@ import { formatDate, formatSize } from '../../utils/format';
 import { useSettingsStore } from '../../stores/settings';
 import { t } from '../../i18n';
 import EntryIcon from '../dialogs/EntryIcon.vue';
+import { trackPress } from '../../utils/paneDrag';
 
 const props = defineProps<{
   title: string;
@@ -32,6 +33,8 @@ const props = defineProps<{
   canGoForward: boolean;
   /// Why the last navigation failed; the previous listing stays shown.
   error?: string | null;
+  /// Something dragged over this pane would land here.
+  dropHighlight?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -51,18 +54,15 @@ const emit = defineEmits<{
   move: [];
   /// Open in a local application (remote files).
   edit: [];
-  /// Files dragged from the other pane were dropped here.
+  /// Files dragged from this pane were dropped on the other one.
   drop: [from: PaneSide, paths: string[]];
 }>();
-
-const DRAG_TYPE = 'application/x-omniscp-files';
 
 const editPath = ref(props.path);
 const anchor = ref<string | null>(null);
 /// The row the keyboard is on; screen readers announce it.
 const cursor = ref<string | null>(null);
 const rowIdPrefix = useId();
-const dropTarget = ref(false);
 
 const filterText = ref('');
 const settings = useSettingsStore();
@@ -258,44 +258,27 @@ function onMouseUp(e: MouseEvent) {
   else if (e.button === 4) emit('forward');
 }
 
-function onDragStart(e: DragEvent, file: FileEntry) {
-  // Dragging an unselected row drags just that row.
-  const paths = selectedSet.value.has(file.path) ? props.selected : [file.path];
-  if (!selectedSet.value.has(file.path)) emit('update:selected', paths);
-  e.dataTransfer?.setData(DRAG_TYPE, JSON.stringify({ from: props.side, paths }));
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy';
-}
-
-function isForeignDrag(e: DragEvent) {
-  return e.dataTransfer?.types.includes(DRAG_TYPE) ?? false;
-}
-
-function onDragOver(e: DragEvent) {
-  if (!isForeignDrag(e)) return;
-  e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-  dropTarget.value = true;
-}
-
-function onDrop(e: DragEvent) {
-  dropTarget.value = false;
-  const raw = e.dataTransfer?.getData(DRAG_TYPE);
-  if (!raw) return;
-  e.preventDefault();
-  const { from, paths } = JSON.parse(raw) as { from: PaneSide; paths: string[] };
-  if (from !== props.side) emit('drop', from, paths);
+function onRowMouseDown(e: MouseEvent, file: FileEntry) {
+  trackPress(
+    e,
+    () => {
+      // Dragging an unselected row drags just that row.
+      const paths = selectedSet.value.has(file.path) ? props.selected : [file.path];
+      if (!selectedSet.value.has(file.path)) emit('update:selected', paths);
+      return { from: props.side, paths, label: paths.length === 1 ? file.name : t.common.items(paths.length) };
+    },
+    (drag) => emit('drop', drag.from, drag.paths),
+  );
 }
 
 </script>
 
 <template>
   <div
-    :class="['file-pane', { 'pane-active': active, 'drop-target': dropTarget }]"
+    :class="['file-pane', { 'pane-active': active, 'drop-target': dropHighlight }]"
+    :data-pane="side"
     @mousedown="emit('activate')"
     @mouseup="onMouseUp"
-    @dragover="onDragOver"
-    @dragleave="dropTarget = false"
-    @drop="onDrop"
   >
     <div class="pane-header">
       <span class="pane-title">{{ props.title }}</span>
@@ -376,10 +359,9 @@ function onDrop(e: DragEvent) {
             :class="['file-row', { selected: selectedSet.has(file.path), cursor: cursor === file.path }]"
             role="row"
             :aria-selected="selectedSet.has(file.path)"
-            draggable="true"
+            @mousedown="onRowMouseDown($event, file)"
             @click="onRowClick($event, file, index)"
             @dblclick="onDblClick(file)"
-            @dragstart="onDragStart($event, file)"
           >
             <td class="col-name" role="gridcell">
               <EntryIcon class="file-icon" :entry="file" />
