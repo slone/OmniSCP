@@ -8,6 +8,7 @@ name: Release
 on:
   push:
     tags: ['v*']
+    branches: [feature/release]  # TEMPORARY: test run before the merge
   workflow_dispatch:
 
 permissions:
