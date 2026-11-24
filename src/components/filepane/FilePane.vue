@@ -259,6 +259,11 @@ function onMouseUp(e: MouseEvent) {
 }
 
 function onRowMouseDown(e: MouseEvent, file: FileEntry) {
+  if (e.button !== 0) return;
+  // A press on a row selects rows, never text: otherwise dragging to the
+  // other pane would select every text in between. The list still takes focus.
+  e.preventDefault();
+  (e.currentTarget as HTMLElement).closest<HTMLElement>('.file-list-container')?.focus();
   trackPress(
     e,
     () => {
