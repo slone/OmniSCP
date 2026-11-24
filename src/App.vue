@@ -131,6 +131,25 @@ body,
   overflow: hidden;
 }
 
+/* As in a native application, the interface itself is not text to select:
+   a selection started in a pane would spread to the toolbar and the rest. */
+html {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Text worth copying: fields, the log, error messages, properties. */
+input,
+textarea,
+[role='alert'],
+.log-entries,
+.problem-row,
+.facts dd,
+.state-error {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* Read by screen readers, not shown. */
 .visually-hidden {
   position: absolute;
