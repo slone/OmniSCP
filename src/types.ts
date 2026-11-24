@@ -25,6 +25,8 @@ export interface Profile {
   group?: string;
   /// Password/passphrase kept in the OS credential store, never in this object.
   save_password?: boolean;
+  /// FTPS only: TLS from the first byte (usually port 990) instead of after AUTH TLS.
+  implicit_tls?: boolean;
 }
 
 export interface FileEntry {

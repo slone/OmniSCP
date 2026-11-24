@@ -8,6 +8,8 @@ defineProps<{
   host: string;
   port: number;
   fingerprint: string;
+  /// FTPS: a TLS certificate rather than an SSH host key.
+  certificate?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -25,8 +27,10 @@ onMounted(() => {
 
 <template>
   <BaseDialog :title="t.hostKey.title(profileName)" :width="440" @cancel="emit('cancel')">
-    <p>{{ t.hostKey.intro(`${host}:${port}`) }}</p>
-    <div class="fingerprint" :aria-label="t.hostKey.fingerprint">{{ fingerprint }}</div>
+    <p>{{ certificate ? t.hostKey.certificateIntro(`${host}:${port}`) : t.hostKey.intro(`${host}:${port}`) }}</p>
+    <div class="fingerprint" :aria-label="certificate ? t.hostKey.certificateFingerprint : t.hostKey.fingerprint">
+      {{ fingerprint }}
+    </div>
     <p>{{ t.hostKey.remember }}</p>
     <template #footer>
       <button ref="cancelRef" class="btn" @click="emit('cancel')">{{ t.common.cancel }}</button>

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/slone/OmniSCP/actions/workflows/ci.yml/badge.svg)](https://github.com/slone/OmniSCP/actions/workflows/ci.yml)
 
-A cross-platform file transfer client for SFTP and SCP, in the spirit of WinSCP: a local and a remote pane side by side, a transfer queue, folder synchronization with a preview, and connection profiles whose passwords stay in the system keychain.
+A cross-platform file transfer client for SFTP, SCP, FTP and FTPS, in the spirit of WinSCP: a local and a remote pane side by side, a transfer queue, folder synchronization with a preview, and connection profiles whose passwords stay in the system keychain.
 
 Built with [Tauri 2](https://tauri.app) (Rust) and Vue 3. The interface is in French and English.
 
@@ -42,7 +42,7 @@ They are not signed yet. On macOS, the first launch is refused: allow it under S
 - Profiles with groups, tags, search, duplication and a connection test
 - Passwords and passphrases are kept in the system keychain (macOS Keychain, Windows Credential Manager, Secret Service on Linux), never in the profiles file, the logs or exports
 - Import and export of profiles, without any secret
-- Server keys are checked against `~/.ssh/known_hosts` and the app's own list; an unknown key is shown for confirmation, a changed key refuses the connection
+- Server keys are checked against `~/.ssh/known_hosts` and the app's own list, and FTPS certificates against the system's authorities; an unknown key or certificate is shown for confirmation, a changed one refuses the connection
 - Authentication by password, key file, key with passphrase or SSH agent
 - An operation log, which can be exported
 
@@ -64,9 +64,13 @@ They are not signed yet. On macOS, the first launch is refused: allow it under S
 
 ## Protocols
 
-SFTP and SCP, both over SSH. SCP runs shell commands on the server for everything but the file contents (listing, renaming, deleting), so it needs a POSIX shell there; prefer SFTP when the server offers it.
+- **SFTP** and **SCP**, both over SSH. SCP runs shell commands on the server for everything but the file contents (listing, renaming, deleting), so it needs a POSIX shell there; prefer SFTP when the server offers it.
+- **FTPS**, FTP over TLS, explicit (port 21) or implicit (port 990). A certificate from a recognised authority is accepted as is; any other, such as a self-signed one, is shown for confirmation like an unknown SSH key, then remembered.
+- **FTP**, unencrypted: the password and the files cross the network in clear. Use it only where nothing better is offered.
 
-FTP, FTPS and WebDAV are planned.
+With FTP and FTPS, dates are exact to the second when the server supports MLSD or MDTM, which most do, and kept on upload when it supports MFMT or vsftpd's MDTM. Passive mode only.
+
+WebDAV is planned.
 
 ## Building
 
@@ -95,7 +99,7 @@ cargo test             # unit tests
 cargo clippy           # lints
 ```
 
-Tests that need a real server are ignored by default. They run against Docker containers: an SFTP server, and two SCP servers whose `ls` differ (Debian and Alpine). How to start them and which variables to set is written at the top of each file in `src-tauri/tests/`.
+Tests that need a real server are ignored by default. They run against Docker containers: an SFTP server, two SCP servers whose `ls` differ (Debian and Alpine), and two FTP servers (vsftpd, also serving FTPS, and ProFTPD). How to start them and which variables to set is written at the top of each file in `src-tauri/tests/`.
 
 GitHub Actions runs the unit tests and Clippy on Linux, macOS and Windows, and the live tests against those servers on Linux (`.github/workflows/ci.yml`).
 
@@ -111,7 +115,7 @@ src/                 Vue 3 interface
   stores/            Pinia stores (connection, transfers, profiles…)
   i18n/              French and English texts
 src-tauri/src/       Rust backend
-  protocols/         SSH session, SFTP and SCP
+  protocols/         SSH session, SFTP, SCP, FTP and FTPS
   transfer/          transfer queue
   sync/              synchronization plans
   config/            settings, profiles, keychain

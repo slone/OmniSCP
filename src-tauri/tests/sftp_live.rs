@@ -25,6 +25,7 @@ fn params(fingerprint: Option<String>, known_hosts: std::path::PathBuf) -> Conne
             tags: vec![],
             group: None,
             save_password: false,
+            implicit_tls: false,
         },
         password: Some("test".into()),
         known_hosts_path: known_hosts,

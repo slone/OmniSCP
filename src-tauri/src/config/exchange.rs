@@ -148,6 +148,7 @@ mod tests {
             tags: vec!["prod".into()],
             group: Some("Clients".into()),
             save_password: true,
+            implicit_tls: false,
         }
     }
 

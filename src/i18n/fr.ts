@@ -70,6 +70,9 @@ const fr = {
     intro: (address: string) =>
       `L’identité du serveur ${address} n’a encore jamais été vérifiée. Comparez cette empreinte avec celle fournie par l’administrateur du serveur avant de continuer.`,
     fingerprint: 'Empreinte de la clé du serveur',
+    certificateIntro: (address: string) =>
+      `Le certificat du serveur ${address} n’est garanti par aucune autorité reconnue (certificat auto-signé, par exemple). Comparez son empreinte avec celle fournie par l’administrateur du serveur avant de continuer.`,
+    certificateFingerprint: 'Empreinte du certificat du serveur',
     remember: 'Si vous l’acceptez, elle sera mémorisée pour les prochaines connexions.',
     accept: 'Faire confiance et se connecter',
   },
@@ -217,7 +220,7 @@ const fr = {
     connectedTo: (name: string) => `Connecté à ${name}`,
     disconnectedFrom: (name: string) => `Déconnecté de ${name}`,
     hostKeyChanged: (fingerprint: string) =>
-      `ATTENTION : la clé du serveur a changé (${fingerprint}). Connexion refusée — il pourrait s’agir d’une attaque de l’homme du milieu.`,
+      `ATTENTION : l’identité du serveur (clé ou certificat) a changé (${fingerprint}). Connexion refusée — il pourrait s’agir d’une attaque de l’homme du milieu.`,
     connectionLost: 'La connexion au serveur a été perdue. Reconnectez-vous pour continuer.',
     localNav: 'Navigation',
     remoteNav: 'Navigation distante',
@@ -448,6 +451,11 @@ const fr = {
     soon: ' (bientôt)',
     scpHint:
       'SCP utilise des commandes shell sur le serveur pour lister, renommer et supprimer. Préférez SFTP s’il est disponible.',
+    ftpHint:
+      'FTP transmet le mot de passe et les fichiers en clair sur le réseau. Préférez FTPS ou SFTP si le serveur les propose.',
+    implicitTls: 'TLS implicite',
+    implicitTlsHint:
+      'Seulement si le serveur l’exige, en général sur le port 990. La plupart utilisent le TLS explicite, sur le port 21.',
     username: 'Nom d’utilisateur *',
     auth: 'Authentification',
     authPassword: 'Mot de passe',
@@ -476,7 +484,7 @@ const fr = {
     enterPassword: 'Saisissez le mot de passe à enregistrer.',
     enterPassphrase: 'Saisissez la phrase secrète à enregistrer.',
     hostKeyChanged: (fingerprint: string) =>
-      `La clé du serveur a changé (${fingerprint}). Connexion refusée — il pourrait s’agir d’une attaque de l’homme du milieu.`,
+      `L’identité du serveur (clé ou certificat) a changé (${fingerprint}). Connexion refusée — il pourrait s’agir d’une attaque de l’homme du milieu.`,
     testing: 'Test de la connexion…',
     testOk: 'Connexion réussie. Dossier de départ :',
     testDirFailed: 'Connexion réussie, mais le répertoire distant initial n’est pas accessible :',
@@ -535,8 +543,8 @@ const fr = {
     'edit.notEditing': () => 'Ce fichier n’est plus en édition',
     'edit.tooLarge': (p: P) =>
       `${p.path} est trop gros pour être édité (${p.max} Mo au plus) ; téléchargez-le plutôt`,
-    'hostKey.mismatch': () => 'La clé du serveur ne correspond pas à celle enregistrée',
-    'hostKey.unknown': () => 'Clé du serveur inconnue',
+    'hostKey.mismatch': () => 'L’identité du serveur (clé ou certificat) ne correspond pas à celle enregistrée',
+    'hostKey.unknown': () => 'Identité du serveur (clé ou certificat) inconnue',
     'io.exists': (p: P) => `${p.path} existe déjà`,
     'io.failed': (p: P) => `Erreur sur ${p.path}`,
     'io.failedNoPath': () => 'Erreur d’accès aux fichiers',
@@ -571,6 +579,9 @@ const fr = {
     'queue.closed': () => 'La file de transferts est arrêtée',
     'remote.chmod': (p: P) => `Impossible de modifier les droits de ${p.path}`,
     'remote.delete': (p: P) => `Impossible de supprimer ${p.path}`,
+    'ftp.binary': () => 'Le serveur refuse le mode de transfert binaire',
+    'ftp.listing': (p: P) => `Le contenu de ${p.path} est dans un format inattendu`,
+    'ftps.handshake': () => 'Échec de la connexion chiffrée (TLS) avec le serveur',
     'remote.list': (p: P) => `Impossible de lister ${p.path}`,
     'remote.mkdir': (p: P) => `Impossible de créer le dossier ${p.path}`,
     'remote.notFound': (p: P) => `${p.path} est introuvable sur le serveur`,

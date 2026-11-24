@@ -11,6 +11,9 @@
 //!   OMNISCP_TEST_CONTAINER=omniscp-scp-debian OMNISCP_TEST_FINGERPRINT=SHA256:... \\
 //!   cargo test --test transfer_live -- --ignored --test-threads=1
 //!
+//! Over FTP or FTPS, on a server of ftp_live.rs, with its variables as well
+//! and `OMNISCP_TEST_BASE=` (the account's home is the server's root).
+//!
 //! `OMNISCP_TEST_CHROOT` is where the server's paths live inside the container
 //! (/home/test for the SFTP server), and `OMNISCP_TEST_OWNER` the name expected
 //! for the test account, empty when the server's account files are out of reach.
@@ -60,10 +63,11 @@ impl Harness {
                 name: "test".into(),
                 host: "localhost".into(),
                 port: env_or("OMNISCP_TEST_PORT", "2222").parse().unwrap(),
-                protocol: if env_or("OMNISCP_TEST_PROTOCOL", "sftp") == "scp" {
-                    ProtocolType::Scp
-                } else {
-                    ProtocolType::Sftp
+                protocol: match env_or("OMNISCP_TEST_PROTOCOL", "sftp").as_str() {
+                    "scp" => ProtocolType::Scp,
+                    "ftp" => ProtocolType::Ftp,
+                    "ftps" => ProtocolType::Ftps,
+                    _ => ProtocolType::Sftp,
                 },
                 username: "test".into(),
                 auth_method: AuthMethod::Password,
@@ -72,6 +76,7 @@ impl Harness {
                 tags: vec![],
                 group: None,
                 save_password: false,
+                implicit_tls: env_or("OMNISCP_TEST_IMPLICIT", "") == "1",
             },
             password: Some("test".into()),
             known_hosts_path: tmp.join("known_hosts"),
@@ -297,13 +302,18 @@ fn permissions_links_owner_names_and_folder_size() {
     let remote_file = format!("{base}/real file.txt");
 
     let stat = |path: &str| h.conn.stat(path).unwrap();
-    h.conn.set_permissions(&remote_file, 0o4751).unwrap();
-    assert_eq!(stat(&remote_file).mode, Some(0o4751));
-    assert_eq!(stat(&remote_file).permissions.as_deref(), Some("-rwsr-x--x"));
+    // vsftpd leaves out setuid, setgid and sticky bits.
+    if env_or("OMNISCP_TEST_SPECIAL_BITS", "1") == "1" {
+        h.conn.set_permissions(&remote_file, 0o4751).unwrap();
+        assert_eq!(stat(&remote_file).mode, Some(0o4751));
+        assert_eq!(stat(&remote_file).permissions.as_deref(), Some("-rwsr-x--x"));
+    }
     h.conn.set_permissions(&remote_file, 0o640).unwrap();
     assert_eq!(stat(&remote_file).permissions.as_deref(), Some("-rw-r-----"));
-    h.conn.set_permissions(&format!("{base}/sub"), 0o1777).unwrap();
-    assert_eq!(stat(&format!("{base}/sub")).permissions.as_deref(), Some("drwxrwxrwt"));
+    if env_or("OMNISCP_TEST_SPECIAL_BITS", "1") == "1" {
+        h.conn.set_permissions(&format!("{base}/sub"), 0o1777).unwrap();
+        assert_eq!(stat(&format!("{base}/sub")).permissions.as_deref(), Some("drwxrwxrwt"));
+    }
     // Never recursive, and refused where the account has no right.
     assert!(matches!(h.conn.set_permissions("/", 0o777), Err(OmniError::Permission(_))));
 
@@ -314,7 +324,8 @@ fn permissions_links_owner_names_and_folder_size() {
     assert!(h.conn.read_link(&remote_file).is_err(), "a plain file is not a link");
 
     let mut entries = h.conn.list_dir(&base).unwrap();
-    assert!(entries.iter().all(|e| e.uid.is_some() && e.gid.is_some()));
+    // SSH gives numbers, named afterwards; FTP servers often give the names themselves.
+    assert!(entries.iter().all(|e| (e.uid.is_some() || e.owner.is_some()) && (e.gid.is_some() || e.group.is_some())));
     h.conn.account_names().name_entries(&mut entries);
     let expected = env_or("OMNISCP_TEST_OWNER", "test");
     let owner = entries.iter().find(|e| e.name == "real file.txt").unwrap().owner.clone();
@@ -669,11 +680,15 @@ fn connection_test_checks_login_and_starting_folder() {
 
     assert!(matches!(with(&|p| p.password = Some("wrong".into())), Err(OmniError::Auth(_))));
 
-    let unknown = with(&|p| {
-        p.known_hosts_path = h.tmp.join("other_known_hosts");
-        p.trusted_fingerprint = None;
-    });
-    assert!(matches!(unknown, Err(OmniError::HostKeyUnknown(_))), "{unknown:?}");
+    // Plain FTP has no server identity to check.
+    if h.params.profile.protocol != ProtocolType::Ftp {
+        let unknown = with(&|p| {
+            // FTPS certificates are remembered beside it, so another folder.
+            p.known_hosts_path = h.tmp.join("other/known_hosts");
+            p.trusted_fingerprint = None;
+        });
+        assert!(matches!(unknown, Err(OmniError::HostKeyUnknown(_))), "{unknown:?}");
+    }
 }
 
 #[test]
