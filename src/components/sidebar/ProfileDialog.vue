@@ -5,6 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import type { Profile, ProtocolType, AuthMethod, ProbeResult } from '../../types';
 import { errorMessage, isBackendError } from '../../utils/errors';
 import BaseDialog from '../dialogs/BaseDialog.vue';
+import SuggestInput from '../SuggestInput.vue';
 import { t } from '../../i18n';
 
 const props = defineProps<{
@@ -355,18 +356,12 @@ watch([host, port, protocol, implicitTls, username, authType, keyPath, secret, r
 
       <div class="form-group">
         <label class="form-label" :for="fieldId('group')">{{ t.profile.group }}</label>
-        <input
+        <SuggestInput
           :id="fieldId('group')"
           v-model="group"
-          type="text"
-          class="form-input"
-          :list="fieldId('groups')"
+          :suggestions="groups ?? []"
           :placeholder="t.profile.groupPlaceholder"
-          spellcheck="false"
         />
-        <datalist :id="fieldId('groups')">
-          <option v-for="g in groups ?? []" :key="g" :value="g" />
-        </datalist>
       </div>
 
       <div class="form-group">

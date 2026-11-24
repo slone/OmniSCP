@@ -25,6 +25,7 @@ const fr = {
     items: (n: number) => `${num(n)} ${plural(n, 'élément', 'éléments')}`,
     bytes: (n: number) => `${num(n)} ${plural(n, 'octet', 'octets')}`,
     sizeUnits: ['o', 'Ko', 'Mo', 'Go'],
+    showSuggestions: 'Afficher les suggestions',
   },
 
   toolbar: {
@@ -208,6 +209,7 @@ const fr = {
     permissions: 'Droits',
     owner: 'Propriétaire',
     resizeHint: 'Glisser pour redimensionner, double-cliquer pour ajuster au contenu',
+    resizeColumn: (column: string) => `Largeur de la colonne ${column} (flèches, Entrée pour ajuster)`,
     parent: 'Dossier parent',
     ownerTitle: (user: string, group?: string) =>
       `Propriétaire : ${user}${group === undefined ? '' : ` — groupe : ${group}`}`,

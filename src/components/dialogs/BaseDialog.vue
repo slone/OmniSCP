@@ -25,10 +25,6 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  // WebKit leaves a field's suggestion list on screen when the field goes
-  // away while focused (a group picked, then saved at once).
-  const active = document.activeElement;
-  if (active instanceof HTMLElement && panel.value?.contains(active)) active.blur();
   if (opener?.isConnected) opener.focus();
 });
 

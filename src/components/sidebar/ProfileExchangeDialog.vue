@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, useId } from 'vue';
+import { computed, ref } from 'vue';
 import BaseDialog from '../dialogs/BaseDialog.vue';
+import SuggestInput from '../SuggestInput.vue';
 import type { Profile } from '../../types';
 import { intlLocale, t } from '../../i18n';
 
@@ -19,7 +20,6 @@ const props = defineProps<{
 const emit = defineEmits<{ confirm: [profiles: Profile[]]; cancel: [] }>();
 
 const collator = new Intl.Collator(intlLocale(), { numeric: true, sensitivity: 'base' });
-const ids = useId();
 
 function sameServer(a: Profile, b: Profile) {
   return (
@@ -130,16 +130,7 @@ function onConfirm() {
 
     <label v-if="mode === 'import'" class="field">
       <span class="form-label">{{ t.exchange.targetGroup }}</span>
-      <input
-        v-model="targetGroup"
-        class="form-input"
-        :list="`${ids}-groups`"
-        :placeholder="t.exchange.keepGroups"
-        spellcheck="false"
-      />
-      <datalist :id="`${ids}-groups`">
-        <option v-for="g in groups ?? []" :key="g" :value="g" />
-      </datalist>
+      <SuggestInput v-model="targetGroup" :suggestions="groups ?? []" :placeholder="t.exchange.keepGroups" />
     </label>
 
     <p class="note">

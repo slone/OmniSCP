@@ -144,6 +144,34 @@ function startResize(e: MouseEvent, key: ColumnKey) {
   window.addEventListener('mouseup', up);
 }
 
+function columnLabel(key: ColumnKey) {
+  const labels: Record<ColumnKey, string> = {
+    name: t.panes.name,
+    size: t.panes.size,
+    modified: t.panes.modified,
+    permissions: t.panes.permissions,
+    owner: t.panes.owner,
+  };
+  return labels[key];
+}
+
+/// The border, focused: arrows resize by 10 pixels, Enter fits the content.
+function onResizerKey(e: KeyboardEvent, key: ColumnKey) {
+  const header = (e.currentTarget as HTMLElement).parentElement;
+  const current = header?.getBoundingClientRect().width ?? MIN_WIDTH;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    setWidth(key, current + (e.key === 'ArrowRight' ? 10 : -10));
+    saveWidths();
+  } else if (e.key === 'Enter') {
+    autoSize(key);
+  } else {
+    return;
+  }
+  // Not the list's own keys (moving the cursor, opening a file).
+  e.preventDefault();
+  e.stopPropagation();
+}
+
 /// Double-clicking the border fits the column to its widest content on screen.
 async function autoSize(key: ColumnKey) {
   // Narrowed first, each cell's scroll width is its content's own width.
@@ -423,23 +451,78 @@ function onRowMouseDown(e: MouseEvent, file: FileEntry) {
           <tr role="row">
             <th role="columnheader" class="col-name" :aria-sort="ariaSort('name')">
               <button class="sort-btn" tabindex="-1" @click="sortBy('name')">{{ t.panes.name }}{{ sortMark('name') }}</button>
-              <span class="col-resizer" :title="t.panes.resizeHint" aria-hidden="true" @mousedown.stop.prevent="startResize($event, 'name')" @dblclick.stop="autoSize('name')" />
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('name'))"
+                :aria-valuenow="widths.name"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'name')"
+                @dblclick.stop="autoSize('name')"
+                @keydown="onResizerKey($event, 'name')"
+              />
             </th>
             <th role="columnheader" class="col-size" :aria-sort="ariaSort('size')">
               <button class="sort-btn" tabindex="-1" @click="sortBy('size')">{{ t.panes.size }}{{ sortMark('size') }}</button>
-              <span class="col-resizer" :title="t.panes.resizeHint" aria-hidden="true" @mousedown.stop.prevent="startResize($event, 'size')" @dblclick.stop="autoSize('size')" />
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('size'))"
+                :aria-valuenow="widths.size"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'size')"
+                @dblclick.stop="autoSize('size')"
+                @keydown="onResizerKey($event, 'size')"
+              />
             </th>
             <th role="columnheader" class="col-date" :aria-sort="ariaSort('modified')">
               <button class="sort-btn" tabindex="-1" @click="sortBy('modified')">{{ t.panes.modified }}{{ sortMark('modified') }}</button>
-              <span class="col-resizer" :title="t.panes.resizeHint" aria-hidden="true" @mousedown.stop.prevent="startResize($event, 'modified')" @dblclick.stop="autoSize('modified')" />
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('modified'))"
+                :aria-valuenow="widths.modified"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'modified')"
+                @dblclick.stop="autoSize('modified')"
+                @keydown="onResizerKey($event, 'modified')"
+              />
             </th>
             <th role="columnheader" class="col-perms">
               {{ t.panes.permissions }}
-              <span class="col-resizer" :title="t.panes.resizeHint" aria-hidden="true" @mousedown.stop.prevent="startResize($event, 'permissions')" @dblclick.stop="autoSize('permissions')" />
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('permissions'))"
+                :aria-valuenow="widths.permissions"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'permissions')"
+                @dblclick.stop="autoSize('permissions')"
+                @keydown="onResizerKey($event, 'permissions')"
+              />
             </th>
             <th role="columnheader" class="col-owner">
               {{ t.panes.owner }}
-              <span class="col-resizer" :title="t.panes.resizeHint" aria-hidden="true" @mousedown.stop.prevent="startResize($event, 'owner')" @dblclick.stop="autoSize('owner')" />
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('owner'))"
+                :aria-valuenow="widths.owner"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'owner')"
+                @dblclick.stop="autoSize('owner')"
+                @keydown="onResizerKey($event, 'owner')"
+              />
             </th>
           </tr>
         </thead>
@@ -700,6 +783,11 @@ function onRowMouseDown(e: MouseEvent, file: FileEntry) {
 
 .col-resizer:hover {
   background: var(--color-border);
+}
+
+.col-resizer:focus-visible {
+  outline: none;
+  background: var(--color-accent);
 }
 
 .file-icon {

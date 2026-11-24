@@ -25,6 +25,7 @@ const en: typeof fr = {
     items: (n: number) => `${num(n)} ${plural(n, 'item', 'items')}`,
     bytes: (n: number) => `${num(n)} ${plural(n, 'byte', 'bytes')}`,
     sizeUnits: ['B', 'KB', 'MB', 'GB'],
+    showSuggestions: 'Show suggestions',
   },
 
   toolbar: {
@@ -208,6 +209,7 @@ const en: typeof fr = {
     permissions: 'Permissions',
     owner: 'Owner',
     resizeHint: 'Drag to resize, double-click to fit the content',
+    resizeColumn: (column: string) => `Width of the ${column} column (arrows, Enter to fit)`,
     parent: 'Parent folder',
     ownerTitle: (user: string, group?: string) => `Owner: ${user}${group === undefined ? '' : ` — group: ${group}`}`,
     connectFailed: 'Connection failed',
