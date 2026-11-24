@@ -21,6 +21,7 @@ fn params(fingerprint: Option<String>, known_hosts: std::path::PathBuf) -> Conne
             username: "test".into(),
             auth_method: AuthMethod::Password,
             remote_directory: None,
+            local_directory: None,
             description: None,
             tags: vec![],
             group: None,

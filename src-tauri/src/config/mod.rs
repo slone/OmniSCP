@@ -33,6 +33,9 @@ pub struct Profile {
     pub username: String,
     pub auth_method: AuthMethod,
     pub remote_directory: Option<String>,
+    /// Where the local pane goes when connecting; it stays where it is if unset.
+    #[serde(default)]
+    pub local_directory: Option<String>,
     pub description: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,

@@ -50,6 +50,7 @@ fn params(tmp: &std::path::Path, fingerprint: Option<String>, password: &str) ->
             username: "test".into(),
             auth_method: AuthMethod::Password,
             remote_directory: None,
+            local_directory: None,
             description: None,
             tags: vec![],
             group: None,

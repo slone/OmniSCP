@@ -19,6 +19,8 @@ export interface Profile {
   username: string;
   auth_method: AuthMethod;
   remote_directory?: string;
+  /// Where the local pane goes when connecting.
+  local_directory?: string;
   description?: string;
   tags: string[];
   /// Folder in the profile list; one level.

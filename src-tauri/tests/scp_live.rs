@@ -28,6 +28,7 @@ fn params(port: u16, known_hosts: PathBuf) -> ConnectParams {
             username: "test".into(),
             auth_method: AuthMethod::Password,
             remote_directory: None,
+            local_directory: None,
             description: None,
             tags: vec![],
             group: None,

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, useId } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import type { Profile, ProtocolType, AuthMethod, ProbeResult } from '../../types';
 import { errorMessage, isBackendError } from '../../utils/errors';
 import BaseDialog from '../dialogs/BaseDialog.vue';
@@ -58,6 +59,12 @@ const keyPath = ref(
     : '',
 );
 const remoteDirectory = ref(props.profile?.remote_directory ?? '');
+const localDirectory = ref(props.profile?.local_directory ?? '');
+
+async function browseLocal() {
+  const chosen = await open({ directory: true, defaultPath: localDirectory.value || undefined }).catch(() => null);
+  if (typeof chosen === 'string') localDirectory.value = chosen;
+}
 const description = ref(props.profile?.description ?? '');
 const tagsText = ref(props.profile?.tags.join(', ') ?? '');
 const group = ref(props.profile?.group ?? '');
@@ -155,6 +162,7 @@ function buildProfile(id: string, storeSecret: boolean): Profile {
     username: username.value.trim(),
     auth_method: authMethod,
     remote_directory: remoteDirectory.value.trim() || undefined,
+    local_directory: localDirectory.value.trim() || undefined,
     description: description.value.trim() || undefined,
     tags,
     group: group.value.trim() || undefined,
@@ -330,6 +338,22 @@ watch([host, port, protocol, implicitTls, username, authType, keyPath, secret, r
       </div>
 
       <div class="form-group">
+        <label class="form-label" :for="fieldId('local-dir')">{{ t.profile.localDirectory }}</label>
+        <div class="input-with-button">
+          <input
+            :id="fieldId('local-dir')"
+            v-model="localDirectory"
+            type="text"
+            class="form-input"
+            spellcheck="false"
+            :aria-describedby="fieldId('local-dir-hint')"
+          />
+          <button type="button" class="btn" @click="browseLocal">{{ t.profile.browse }}</button>
+        </div>
+        <span :id="fieldId('local-dir-hint')" class="form-hint">{{ t.profile.localDirectoryHint }}</span>
+      </div>
+
+      <div class="form-group">
         <label class="form-label" :for="fieldId('group')">{{ t.profile.group }}</label>
         <input
           :id="fieldId('group')"
@@ -416,6 +440,16 @@ watch([host, port, protocol, implicitTls, username, authType, keyPath, secret, r
 .form-row {
   display: flex;
   gap: 12px;
+}
+
+.input-with-button {
+  display: flex;
+  gap: 6px;
+}
+
+.input-with-button .form-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .form-group-grow {
