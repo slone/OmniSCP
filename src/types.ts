@@ -19,12 +19,16 @@ export interface Profile {
   username: string;
   auth_method: AuthMethod;
   remote_directory?: string;
+  /// Where the local pane goes when connecting.
+  local_directory?: string;
   description?: string;
   tags: string[];
   /// Folder in the profile list; one level.
   group?: string;
   /// Password/passphrase kept in the OS credential store, never in this object.
   save_password?: boolean;
+  /// FTPS only: TLS from the first byte (usually port 990) instead of after AUTH TLS.
+  implicit_tls?: boolean;
 }
 
 export interface FileEntry {

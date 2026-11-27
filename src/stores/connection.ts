@@ -8,6 +8,7 @@ import { t } from '../i18n';
 import { errorMessage, isBackendError } from '../utils/errors';
 import { useTransfersStore } from './transfers';
 import { useEditsStore } from './edits';
+import { useLocalFilesStore } from './localFiles';
 
 export const useConnectionStore = defineStore('connection', () => {
   const connected = ref(false);
@@ -37,6 +38,8 @@ export const useConnectionStore = defineStore('connection', () => {
       profileName.value = profile.name;
       logStore.addLog('Info', t.connection.log, t.log.ok, t.log.connectedTo(profile.name));
       await navigateTo(initialPath);
+      // A folder that cannot be opened is reported in the pane; the connection stands.
+      if (profile.local_directory) await useLocalFilesStore().navigateTo(profile.local_directory);
     } catch (err) {
       if (isBackendError(err) && err.code === 'credentials.missing') {
         // Not a failure either: the caller asks for the password.

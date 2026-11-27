@@ -46,6 +46,8 @@ export const useTransfersStore = defineStore('transfers', () => {
   let listening = false;
   // Events can arrive before enqueue_transfer resolves (fast jobs); keep the latest per id.
   const early = new Map<string, TransferEvent>();
+  /// Jobs whose destination was already refreshed when they started.
+  const started = new Set<string>();
 
   const active = computed(() => jobs.value.filter((j) => !FINISHED.has(j.status)));
 
@@ -63,6 +65,12 @@ export const useTransfersStore = defineStore('transfers', () => {
     }
     // Already closed locally (e.g. marked cancelled on disconnect).
     if (FINISHED.has(job.status)) return;
+
+    // A long transfer shows its file or folder in the destination as soon as it starts.
+    if (event.status === 'InProgress' && !started.has(job.id)) {
+      started.add(job.id);
+      refreshDestination(job);
+    }
 
     job.status = event.status;
     job.total_bytes = event.total_bytes;
@@ -107,17 +115,23 @@ export const useTransfersStore = defineStore('transfers', () => {
       return;
     }
 
-    // Show the new files if the destination directory is on screen.
-    const pane = job.direction === 'Upload' ? useConnectionStore() : useLocalFilesStore();
+    // Show the new files if the destination directory is on screen; a
+    // stopped job may have written some, and removes what it left unfinished.
+    started.delete(job.id);
+    if (job.status !== 'Skipped') refreshDestination(job);
     const wroteFiles = job.status === 'Completed' || job.status === 'CompletedWithWarnings';
-    if (wroteFiles && pane.currentPath === job.dest_dir) {
-      pane.refresh();
-    }
     // A move removes its source: show that on the other pane.
     if (job.delete_source && wroteFiles) {
       const source = job.direction === 'Upload' ? useLocalFilesStore() : useConnectionStore();
       if (source.files.some((f) => f.path === job.source)) source.refresh();
     }
+  }
+
+  /// Lists the destination folder again if a pane shows it.
+  function refreshDestination(job: QueuedTransfer) {
+    if (job.direction === 'Sync') return;
+    const pane = job.direction === 'Upload' ? useConnectionStore() : useLocalFilesStore();
+    if (pane.currentPath === job.dest_dir) pane.refresh();
   }
 
   async function enqueue(

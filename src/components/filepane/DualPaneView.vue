@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import FilePane from './FilePane.vue';
 import { useLocalFilesStore } from '../../stores/localFiles';
@@ -8,6 +8,13 @@ import { useFileActionsStore } from '../../stores/fileActions';
 import type { PaneSide } from '../../types';
 import { t } from '../../i18n';
 import { baseName, dragState, paneAt } from '../../utils/paneDrag';
+import Splitter from '../Splitter.vue';
+import { layout, saveLayout, PANE_SPLIT } from '../../utils/layout';
+
+const container = ref<HTMLElement | null>(null);
+/// A pixel of mouse movement, as a share of the two panes' room.
+const splitScale = () => 1 / Math.max(1, (container.value?.clientWidth ?? 1) - 7);
+const splitText = (share: number) => t.layout.share(Math.round(share * 100));
 
 const localStore = useLocalFilesStore();
 const connectionStore = useConnectionStore();
@@ -68,8 +75,8 @@ onUnmounted(() => stopListening?.());
 </script>
 
 <template>
-  <div class="dual-pane">
-    <div class="pane-left">
+  <div ref="container" class="dual-pane">
+    <div class="pane-left" :style="{ flexGrow: layout.paneSplit }">
       <FilePane
         :title="t.panes.local"
         side="local"
@@ -97,8 +104,18 @@ onUnmounted(() => stopListening?.());
         @drop="onDrop"
       />
     </div>
-    <div class="pane-divider" />
-    <div class="pane-right">
+    <Splitter
+      v-model="layout.paneSplit"
+      :min="PANE_SPLIT.min"
+      :max="PANE_SPLIT.max"
+      :step="0.02"
+      :scale="splitScale"
+      :reset="PANE_SPLIT.default"
+      :label="t.layout.panes"
+      :value-text="splitText"
+      @commit="saveLayout"
+    />
+    <div class="pane-right" :style="{ flexGrow: 1 - layout.paneSplit }">
       <template v-if="connectionStore.connected">
         <FilePane
           :title="t.panes.remote"
@@ -178,20 +195,9 @@ onUnmounted(() => stopListening?.());
 
 .pane-left,
 .pane-right {
-  flex: 1;
+  flex-basis: 0;
   min-width: 0;
   overflow: hidden;
-}
-
-.pane-divider {
-  width: 3px;
-  background: var(--color-border);
-  cursor: col-resize;
-  flex-shrink: 0;
-}
-
-.pane-divider:hover {
-  background: var(--color-accent);
 }
 
 .pane-placeholder {

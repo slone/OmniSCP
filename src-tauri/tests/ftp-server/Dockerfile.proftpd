@@ -1,0 +1,8 @@
+# ProFTPD: MLSD and MFMT, plain FTP. See tests/ftp_live.rs.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends proftpd-core \
+    && useradd -m -s /bin/sh test && echo 'test:test' | chpasswd && mkdir -p /run/proftpd \
+    && chown root:root /home/test && mkdir /home/test/upload && chown test:test /home/test/upload
+COPY proftpd.conf /etc/proftpd/proftpd.conf
+EXPOSE 21 30010-30019
+CMD ["proftpd", "--nodaemon"]

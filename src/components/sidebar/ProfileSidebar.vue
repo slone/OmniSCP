@@ -396,7 +396,6 @@ async function onExchangeConfirm(list: Profile[]) {
   width: 100%;
   height: 100%;
   background: var(--color-surface);
-  border-right: 1px solid var(--color-border);
   overflow: hidden;
 }
 
@@ -462,6 +461,7 @@ async function onExchangeConfirm(list: Profile[]) {
 }
 
 .profile-item {
+  position: relative;
   display: flex;
   align-items: center;
   padding: 8px 12px;
@@ -469,7 +469,8 @@ async function onExchangeConfirm(list: Profile[]) {
   border-left: 3px solid transparent;
 }
 
-.profile-item:hover {
+.profile-item:hover,
+.profile-item:focus-within {
   background: var(--color-hover);
 }
 
@@ -516,12 +517,20 @@ async function onExchangeConfirm(list: Profile[]) {
   white-space: nowrap;
 }
 
-/* Hidden visually, not from the keyboard: they show as soon as one has the focus. */
+/* Hidden visually, not from the keyboard: they show as soon as one has the
+   focus. They lie over the end of the line rather than beside it, so a
+   narrow list keeps its room for names. */
 .profile-actions {
+  position: absolute;
+  top: 50%;
+  right: 8px;
   display: flex;
   gap: 2px;
-  flex-shrink: 0;
+  padding-left: 16px;
+  transform: translateY(-50%);
+  background: linear-gradient(to right, transparent, var(--color-hover) 16px);
   opacity: 0;
+  pointer-events: none;
 }
 
 .profile-item:hover .profile-actions,
@@ -529,6 +538,7 @@ async function onExchangeConfirm(list: Profile[]) {
 .group-header:hover .profile-actions,
 .group-header:focus-within .profile-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .btn-icon {
@@ -589,6 +599,7 @@ async function onExchangeConfirm(list: Profile[]) {
 }
 
 .group-header {
+  position: relative;
   display: flex;
   align-items: center;
   padding-right: 12px;

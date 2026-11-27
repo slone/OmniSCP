@@ -33,6 +33,9 @@ pub struct Profile {
     pub username: String,
     pub auth_method: AuthMethod,
     pub remote_directory: Option<String>,
+    /// Where the local pane goes when connecting; it stays where it is if unset.
+    #[serde(default)]
+    pub local_directory: Option<String>,
     pub description: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -42,6 +45,9 @@ pub struct Profile {
     /// The password or passphrase is kept in the OS credential store (see `credentials`).
     #[serde(default)]
     pub save_password: bool,
+    /// FTPS only: TLS from the first byte (usually port 990) rather than after `AUTH TLS`.
+    #[serde(default)]
+    pub implicit_tls: bool,
 }
 
 pub const MIN_CONCURRENT_TRANSFERS: u32 = 1;

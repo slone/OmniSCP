@@ -191,7 +191,7 @@ fn key_file_path(path: &str) -> Result<PathBuf> {
 }
 
 /// Standard base64 without padding, as used by OpenSSH fingerprints.
-fn base64_no_pad(bytes: &[u8]) -> String {
+pub(crate) fn base64_no_pad(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

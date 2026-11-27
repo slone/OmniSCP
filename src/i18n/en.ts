@@ -8,6 +8,13 @@ const plural = (n: number, one: string, other: string) => (n === 1 ? one : other
 const num = (n: number) => n.toLocaleString('en-US');
 
 const en: typeof fr = {
+  layout: {
+    sidebar: 'Width of the profile list',
+    panes: 'Split between the local and remote panes',
+    pixels: (n: number) => `${n} pixels`,
+    share: (percent: number) => `Local pane: ${percent}%`,
+  },
+
   common: {
     cancel: 'Cancel',
     close: 'Close',
@@ -18,6 +25,7 @@ const en: typeof fr = {
     items: (n: number) => `${num(n)} ${plural(n, 'item', 'items')}`,
     bytes: (n: number) => `${num(n)} ${plural(n, 'byte', 'bytes')}`,
     sizeUnits: ['B', 'KB', 'MB', 'GB'],
+    showSuggestions: 'Show suggestions',
   },
 
   toolbar: {
@@ -70,6 +78,9 @@ const en: typeof fr = {
     intro: (address: string) =>
       `The identity of the server ${address} has never been checked. Compare this fingerprint with the one given by the server's administrator before going on.`,
     fingerprint: 'Server key fingerprint',
+    certificateIntro: (address: string) =>
+      `The certificate of the server ${address} is not vouched for by any recognised authority (a self-signed certificate, for instance). Compare its fingerprint with the one given by the server's administrator before going on.`,
+    certificateFingerprint: 'Server certificate fingerprint',
     remember: 'If you accept it, it will be remembered for the next connections.',
     accept: 'Trust and connect',
   },
@@ -197,6 +208,8 @@ const en: typeof fr = {
     modified: 'Modified',
     permissions: 'Permissions',
     owner: 'Owner',
+    resizeHint: 'Drag to resize, double-click to fit the content',
+    resizeColumn: (column: string) => `Width of the ${column} column (arrows, Enter to fit)`,
     parent: 'Parent folder',
     ownerTitle: (user: string, group?: string) => `Owner: ${user}${group === undefined ? '' : ` — group: ${group}`}`,
     connectFailed: 'Connection failed',
@@ -215,7 +228,7 @@ const en: typeof fr = {
     connectedTo: (name: string) => `Connected to ${name}`,
     disconnectedFrom: (name: string) => `Disconnected from ${name}`,
     hostKeyChanged: (fingerprint: string) =>
-      `WARNING: the server key has changed (${fingerprint}). Connection refused — this could be a man-in-the-middle attack.`,
+      `WARNING: the server's identity (key or certificate) has changed (${fingerprint}). Connection refused — this could be a man-in-the-middle attack.`,
     connectionLost: 'The connection to the server was lost. Connect again to go on.',
     localNav: 'Browsing',
     remoteNav: 'Remote browsing',
@@ -440,6 +453,9 @@ const en: typeof fr = {
     protocol: 'Protocol',
     soon: ' (coming soon)',
     scpHint: 'SCP runs shell commands on the server to list, rename and delete. Prefer SFTP when it is available.',
+    ftpHint: 'FTP sends the password and the files unencrypted over the network. Prefer FTPS or SFTP when the server offers them.',
+    implicitTls: 'Implicit TLS',
+    implicitTlsHint: 'Only if the server requires it, usually on port 990. Most use explicit TLS, on port 21.',
     username: 'User name *',
     auth: 'Authentication',
     authPassword: 'Password',
@@ -455,6 +471,9 @@ const en: typeof fr = {
     keptInKeychain: 'Kept in the system keychain, never in the profiles file.',
     testOnly: 'Only used for the test: it will be asked at every connection.',
     remoteDirectory: 'Initial remote folder',
+    localDirectory: 'Initial local folder',
+    localDirectoryHint: 'The local pane goes there when connecting. Empty: it stays where it is.',
+    browse: 'Browse…',
     group: 'Group',
     groupPlaceholder: 'None',
     description: 'Description',
@@ -468,7 +487,7 @@ const en: typeof fr = {
     enterPassword: 'Enter the password to save.',
     enterPassphrase: 'Enter the passphrase to save.',
     hostKeyChanged: (fingerprint: string) =>
-      `The server key has changed (${fingerprint}). Connection refused — this could be a man-in-the-middle attack.`,
+      `The server's identity (key or certificate) has changed (${fingerprint}). Connection refused — this could be a man-in-the-middle attack.`,
     testing: 'Testing the connection…',
     testOk: 'Connection succeeded. Starting folder:',
     testDirFailed: 'Connection succeeded, but the initial remote folder cannot be opened:',
@@ -523,8 +542,8 @@ const en: typeof fr = {
     'edit.noApp': (p: P) => `No application could open ${p.path}`,
     'edit.notEditing': () => 'This file is no longer being edited',
     'edit.tooLarge': (p: P) => `${p.path} is too large to edit (${p.max} MB at most); download it instead`,
-    'hostKey.mismatch': () => 'The server key does not match the recorded one',
-    'hostKey.unknown': () => 'Unknown server key',
+    'hostKey.mismatch': () => "The server's identity (key or certificate) does not match the recorded one",
+    'hostKey.unknown': () => "Unknown server identity (key or certificate)",
     'io.exists': (p: P) => `${p.path} already exists`,
     'io.failed': (p: P) => `Error on ${p.path}`,
     'io.failedNoPath': () => 'File access error',
@@ -558,6 +577,9 @@ const en: typeof fr = {
     'queue.closed': () => 'The transfer queue has stopped',
     'remote.chmod': (p: P) => `Could not change the permissions of ${p.path}`,
     'remote.delete': (p: P) => `Could not delete ${p.path}`,
+    'ftp.binary': () => 'The server refuses binary transfer mode',
+    'ftp.listing': (p: P) => `The contents of ${p.path} are in an unexpected format`,
+    'ftps.handshake': () => 'Could not set up the encrypted (TLS) connection with the server',
     'remote.list': (p: P) => `Could not list ${p.path}`,
     'remote.mkdir': (p: P) => `Could not create the folder ${p.path}`,
     'remote.notFound': (p: P) => `${p.path} not found on the server`,

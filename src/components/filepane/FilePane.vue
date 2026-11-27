@@ -10,6 +10,42 @@ const sortBySide = reactive<Record<string, { key: SortKey; ascending: boolean }>
 });
 
 const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+export type ColumnKey = 'name' | 'size' | 'modified' | 'permissions' | 'owner';
+type Widths = Partial<Record<ColumnKey, number>>;
+
+/// The class each column's cells carry.
+const COLUMN_CLASS: Record<ColumnKey, string> = {
+  name: 'col-name',
+  size: 'col-size',
+  modified: 'col-date',
+  permissions: 'col-perms',
+  owner: 'col-owner',
+};
+/// The name column takes the room left until the user sets its width.
+const DEFAULT_WIDTHS: Widths = { size: 80, modified: 120, permissions: 80, owner: 105 };
+const MIN_WIDTH = 40;
+const WIDTHS_KEY = 'omniscp.columnWidths';
+
+function loadWidths(): Record<string, Widths> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(WIDTHS_KEY) ?? '{}');
+    return { local: saved.local ?? {}, remote: saved.remote ?? {} };
+  } catch {
+    return { local: {}, remote: {} };
+  }
+}
+
+/// Column widths set by the user, per side; kept in this browser's storage.
+const widthsBySide = reactive<Record<string, Widths>>(loadWidths());
+
+function saveWidths() {
+  try {
+    localStorage.setItem(WIDTHS_KEY, JSON.stringify(widthsBySide));
+  } catch {
+    // Not worth more than losing the widths at the next start.
+  }
+}
 </script>
 
 <script setup lang="ts">
@@ -69,6 +105,83 @@ const settings = useSettingsStore();
 const sort = computed(() => sortBySide[props.side]);
 
 const selectedSet = computed(() => new Set(props.selected));
+
+const columnKeys = Object.keys(COLUMN_CLASS) as ColumnKey[];
+const widths = computed<Widths>(() => ({ ...DEFAULT_WIDTHS, ...widthsBySide[props.side] }));
+const table = ref<HTMLTableElement | null>(null);
+
+function columnStyle(key: ColumnKey) {
+  const width = widths.value[key];
+  return width ? { width: `${width}px` } : undefined;
+}
+
+/// Fixed widths add up; until the name column has one, it fills the pane.
+const tableStyle = computed(() => {
+  const others = columnKeys.filter((k) => k !== 'name').reduce((sum, k) => sum + (widths.value[k] ?? 0), 0);
+  const name = widths.value.name;
+  return name ? { width: `${name + others}px` } : { width: '100%', minWidth: `${others + 150}px` };
+});
+
+function setWidth(key: ColumnKey, width: number) {
+  widthsBySide[props.side] = { ...widthsBySide[props.side], [key]: Math.max(MIN_WIDTH, Math.round(width)) };
+}
+
+/// Dragging the border at the right of a header.
+function startResize(e: MouseEvent, key: ColumnKey) {
+  const header = (e.currentTarget as HTMLElement).parentElement;
+  if (!header) return;
+  const startX = e.clientX;
+  const startWidth = header.getBoundingClientRect().width;
+  const move = (m: MouseEvent) => setWidth(key, startWidth + m.clientX - startX);
+  const up = () => {
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+    document.documentElement.classList.remove('col-resizing');
+    saveWidths();
+  };
+  document.documentElement.classList.add('col-resizing');
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+}
+
+function columnLabel(key: ColumnKey) {
+  const labels: Record<ColumnKey, string> = {
+    name: t.panes.name,
+    size: t.panes.size,
+    modified: t.panes.modified,
+    permissions: t.panes.permissions,
+    owner: t.panes.owner,
+  };
+  return labels[key];
+}
+
+/// The border, focused: arrows resize by 10 pixels, Enter fits the content.
+function onResizerKey(e: KeyboardEvent, key: ColumnKey) {
+  const header = (e.currentTarget as HTMLElement).parentElement;
+  const current = header?.getBoundingClientRect().width ?? MIN_WIDTH;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    setWidth(key, current + (e.key === 'ArrowRight' ? 10 : -10));
+    saveWidths();
+  } else if (e.key === 'Enter') {
+    autoSize(key);
+  } else {
+    return;
+  }
+  // Not the list's own keys (moving the cursor, opening a file).
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+/// Double-clicking the border fits the column to its widest content on screen.
+async function autoSize(key: ColumnKey) {
+  // Narrowed first, each cell's scroll width is its content's own width.
+  setWidth(key, MIN_WIDTH);
+  await nextTick();
+  const cells = table.value?.querySelectorAll<HTMLElement>(`.${COLUMN_CLASS[key]}`) ?? [];
+  const widest = Math.max(MIN_WIDTH, ...Array.from(cells, (cell) => cell.scrollWidth));
+  setWidth(key, widest + 2);
+  saveWidths();
+}
 
 function compare(a: FileEntry, b: FileEntry): number {
   // Folders stay above files whatever the order, as in most file managers.
@@ -259,6 +372,11 @@ function onMouseUp(e: MouseEvent) {
 }
 
 function onRowMouseDown(e: MouseEvent, file: FileEntry) {
+  if (e.button !== 0) return;
+  // A press on a row selects rows, never text: otherwise dragging to the
+  // other pane would select every text in between. The list still takes focus.
+  e.preventDefault();
+  (e.currentTarget as HTMLElement).closest<HTMLElement>('.file-list-container')?.focus();
   trackPress(
     e,
     () => {
@@ -325,20 +443,87 @@ function onRowMouseDown(e: MouseEvent, file: FileEntry) {
       @focus="emit('activate')"
     >
       <div v-if="props.loading" class="loading-indicator" role="status">{{ t.panes.loading }}</div>
-      <table v-else class="file-list" role="presentation">
+      <table v-else ref="table" class="file-list" role="presentation" :style="tableStyle">
+        <colgroup>
+          <col v-for="key in columnKeys" :key="key" :style="columnStyle(key)" />
+        </colgroup>
         <thead role="rowgroup">
           <tr role="row">
             <th role="columnheader" class="col-name" :aria-sort="ariaSort('name')">
               <button class="sort-btn" tabindex="-1" @click="sortBy('name')">{{ t.panes.name }}{{ sortMark('name') }}</button>
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('name'))"
+                :aria-valuenow="widths.name"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'name')"
+                @dblclick.stop="autoSize('name')"
+                @keydown="onResizerKey($event, 'name')"
+              />
             </th>
             <th role="columnheader" class="col-size" :aria-sort="ariaSort('size')">
               <button class="sort-btn" tabindex="-1" @click="sortBy('size')">{{ t.panes.size }}{{ sortMark('size') }}</button>
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('size'))"
+                :aria-valuenow="widths.size"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'size')"
+                @dblclick.stop="autoSize('size')"
+                @keydown="onResizerKey($event, 'size')"
+              />
             </th>
             <th role="columnheader" class="col-date" :aria-sort="ariaSort('modified')">
               <button class="sort-btn" tabindex="-1" @click="sortBy('modified')">{{ t.panes.modified }}{{ sortMark('modified') }}</button>
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('modified'))"
+                :aria-valuenow="widths.modified"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'modified')"
+                @dblclick.stop="autoSize('modified')"
+                @keydown="onResizerKey($event, 'modified')"
+              />
             </th>
-            <th role="columnheader" class="col-perms">{{ t.panes.permissions }}</th>
-            <th role="columnheader" class="col-owner">{{ t.panes.owner }}</th>
+            <th role="columnheader" class="col-perms">
+              {{ t.panes.permissions }}
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('permissions'))"
+                :aria-valuenow="widths.permissions"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'permissions')"
+                @dblclick.stop="autoSize('permissions')"
+                @keydown="onResizerKey($event, 'permissions')"
+              />
+            </th>
+            <th role="columnheader" class="col-owner">
+              {{ t.panes.owner }}
+              <span
+                class="col-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                :aria-label="t.panes.resizeColumn(columnLabel('owner'))"
+                :aria-valuenow="widths.owner"
+                :title="t.panes.resizeHint"
+                @mousedown.stop.prevent="startResize($event, 'owner')"
+                @dblclick.stop="autoSize('owner')"
+                @keydown="onResizerKey($event, 'owner')"
+              />
+            </th>
           </tr>
         </thead>
         <tbody role="rowgroup">
@@ -495,7 +680,7 @@ function onRowMouseDown(e: MouseEvent, file: FileEntry) {
 
 .file-list-container {
   flex: 1;
-  overflow-y: auto;
+  overflow: auto;
 }
 
 .loading-indicator {
@@ -506,7 +691,7 @@ function onRowMouseDown(e: MouseEvent, file: FileEntry) {
 }
 
 .file-list {
-  width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -518,6 +703,10 @@ function onRowMouseDown(e: MouseEvent, file: FileEntry) {
 }
 
 .file-list th {
+  position: relative;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   padding: 4px 8px;
   text-align: left;
   font-weight: 600;
@@ -574,27 +763,31 @@ function onRowMouseDown(e: MouseEvent, file: FileEntry) {
   color: var(--color-text);
 }
 
-.col-name {
-  min-width: 150px;
-}
-
 .col-size {
-  width: 80px;
   text-align: right;
 }
 
-.col-date {
-  width: 120px;
-}
-
 .col-perms {
-  width: 80px;
   font-family: var(--font-mono);
 }
 
-.col-owner {
-  width: 105px;
-  max-width: 105px;
+/* The border at the right of a header: drag to resize, double-click to fit. */
+.col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.col-resizer:hover {
+  background: var(--color-border);
+}
+
+.col-resizer:focus-visible {
+  outline: none;
+  background: var(--color-accent);
 }
 
 .file-icon {

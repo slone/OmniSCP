@@ -1,0 +1,13 @@
+# vsftpd: LIST listings only (no MLSD), plain FTP and explicit FTPS on 21,
+# implicit FTPS on 990, with a self-signed certificate. See tests/ftp_live.rs.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends vsftpd openssl \
+    && useradd -m -s /bin/sh test && echo 'test:test' | chpasswd && mkdir -p /var/run/vsftpd/empty \
+    && chown root:root /home/test && mkdir /home/test/upload && chown test:test /home/test/upload \
+    && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=localhost \
+       -keyout /etc/ssl/private/vsftpd.key -out /etc/ssl/certs/vsftpd.pem 2>/dev/null
+COPY vsftpd.conf /etc/vsftpd.conf
+RUN sed -e 's/^listen_port=21/listen_port=990/' -e 's/^implicit_ssl=NO/implicit_ssl=YES/' \
+    -e 's/^background=NO/background=YES/' /etc/vsftpd.conf > /etc/vsftpd-implicit.conf
+EXPOSE 21 990 30000-30009
+CMD ["sh", "-c", "vsftpd /etc/vsftpd-implicit.conf && exec vsftpd /etc/vsftpd.conf"]

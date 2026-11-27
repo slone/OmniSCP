@@ -123,6 +123,7 @@ fn cleaned(p: Profile) -> std::result::Result<Profile, Msg> {
         group: non_empty(p.group),
         description: non_empty(p.description),
         remote_directory: non_empty(p.remote_directory),
+        local_directory: non_empty(p.local_directory),
         save_password: false,
         ..p
     })
@@ -144,10 +145,12 @@ mod tests {
             username: "me".into(),
             auth_method: AuthMethod::KeyWithPassphrase { path: "~/.ssh/id_ed25519".into() },
             remote_directory: Some("/srv".into()),
+            local_directory: None,
             description: None,
             tags: vec!["prod".into()],
             group: Some("Clients".into()),
             save_password: true,
+            implicit_tls: false,
         }
     }
 

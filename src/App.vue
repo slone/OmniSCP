@@ -5,10 +5,15 @@ import ProfileSidebar from './components/sidebar/ProfileSidebar.vue';
 import DualPaneView from './components/filepane/DualPaneView.vue';
 import BottomPanel from './components/bottom/BottomPanel.vue';
 import FileActionDialogs from './components/dialogs/FileActionDialogs.vue';
+import Splitter from './components/Splitter.vue';
+import { layout, saveLayout, SIDEBAR } from './utils/layout';
+import { t } from './i18n';
+
+const sidebarText = (px: number) => t.layout.pixels(Math.round(px));
 </script>
 
 <template>
-  <div class="app-layout">
+  <div class="app-layout" :style="{ '--sidebar-width': `${layout.sidebar}px` }">
     <header class="app-toolbar">
       <AppToolbar />
     </header>
@@ -16,6 +21,18 @@ import FileActionDialogs from './components/dialogs/FileActionDialogs.vue';
     <aside class="app-sidebar">
       <ProfileSidebar />
     </aside>
+
+    <Splitter
+      v-model="layout.sidebar"
+      class="app-splitter"
+      :min="SIDEBAR.min"
+      :max="SIDEBAR.max"
+      :step="10"
+      :reset="SIDEBAR.default"
+      :label="t.layout.sidebar"
+      :value-text="sidebarText"
+      @commit="saveLayout"
+    />
 
     <main class="app-main">
       <div class="main-files">
@@ -131,6 +148,25 @@ body,
   overflow: hidden;
 }
 
+/* As in a native application, the interface itself is not text to select:
+   a selection started in a pane would spread to the toolbar and the rest. */
+html {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Text worth copying: fields, the log, error messages, properties. */
+input,
+textarea,
+[role='alert'],
+.log-entries,
+.problem-row,
+.facts dd,
+.state-error {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* Read by screen readers, not shown. */
 .visually-hidden {
   position: absolute;
@@ -139,6 +175,12 @@ body,
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* While a column is resized. */
+.col-resizing,
+.col-resizing * {
+  cursor: col-resize !important;
 }
 
 /* While files are dragged between the panes. */
@@ -151,18 +193,22 @@ body,
 <style scoped>
 .app-layout {
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: var(--sidebar-width) auto 1fr;
   grid-template-rows: var(--toolbar-height) 1fr var(--statusbar-height);
   grid-template-areas:
-    "toolbar  toolbar"
-    "sidebar  main"
-    "statusbar statusbar";
+    "toolbar  toolbar  toolbar"
+    "sidebar  splitter main"
+    "statusbar statusbar statusbar";
   height: 100%;
   overflow: hidden;
 }
 
 .app-toolbar {
   grid-area: toolbar;
+}
+
+.app-splitter {
+  grid-area: splitter;
 }
 
 .app-sidebar {

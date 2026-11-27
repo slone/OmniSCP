@@ -1,3 +1,5 @@
+pub mod ftp;
+pub(crate) mod listing;
 pub mod scp;
 pub mod sftp;
 pub mod ssh;
@@ -26,6 +28,7 @@ pub fn for_profile(params: &ConnectParams) -> Result<Box<dyn Protocol>> {
     match params.profile.protocol {
         ProtocolType::Sftp => Ok(Box::new(sftp::SftpConnection::new(params))),
         ProtocolType::Scp => Ok(Box::new(scp::ScpConnection::new(params))),
+        ProtocolType::Ftp | ProtocolType::Ftps => Ok(Box::new(ftp::FtpConnection::new(params))),
         other => Err(OmniError::Protocol(Msg::new("protocol.unsupported").with("protocol", format!("{other:?}")))),
     }
 }
@@ -365,6 +368,11 @@ pub trait Protocol: Send + Sync {
     fn set_permissions(&self, path: &str, mode: u32) -> Result<()>;
     /// Where a symlink points, as stored in the link.
     fn read_link(&self, path: &str) -> Result<String>;
+    /// A file's date to the second. `list_dir` may give a rougher one (FTP's
+    /// `LIST` stops at the minute); sync asks this for each file it compares.
+    fn exact_modified(&self, _path: &str, listed: Option<i64>) -> Option<i64> {
+        listed
+    }
     /// The server's account names; empty when they cannot be read (a chroot, for instance).
     fn account_names(&self) -> AccountNames {
         AccountNames::default()

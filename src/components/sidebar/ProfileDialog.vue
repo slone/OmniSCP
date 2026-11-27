@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, useId } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import type { Profile, ProtocolType, AuthMethod, ProbeResult } from '../../types';
 import { errorMessage, isBackendError } from '../../utils/errors';
 import BaseDialog from '../dialogs/BaseDialog.vue';
+import SuggestInput from '../SuggestInput.vue';
 import { t } from '../../i18n';
 
 const props = defineProps<{
@@ -20,13 +22,13 @@ const emit = defineEmits<{
 
 const allProtocols: ProtocolType[] = ['Sftp', 'Scp', 'Ftp', 'Ftps', 'WebDav', 'WebDavs'];
 
-const availableProtocols: ProtocolType[] = ['Sftp', 'Scp'];
+const availableProtocols: ProtocolType[] = ['Sftp', 'Scp', 'Ftp', 'Ftps'];
 
 const defaultPorts: Record<ProtocolType, number> = {
   Sftp: 22,
   Scp: 22,
   Ftp: 21,
-  Ftps: 990,
+  Ftps: 21,
   WebDav: 80,
   WebDavs: 443,
 };
@@ -58,16 +60,32 @@ const keyPath = ref(
     : '',
 );
 const remoteDirectory = ref(props.profile?.remote_directory ?? '');
+const localDirectory = ref(props.profile?.local_directory ?? '');
+
+async function browseLocal() {
+  const chosen = await open({ directory: true, defaultPath: localDirectory.value || undefined }).catch(() => null);
+  if (typeof chosen === 'string') localDirectory.value = chosen;
+}
 const description = ref(props.profile?.description ?? '');
 const tagsText = ref(props.profile?.tags.join(', ') ?? '');
 const group = ref(props.profile?.group ?? '');
 
+const implicitTls = ref(props.profile?.implicit_tls ?? false);
+const isFtp = computed(() => protocol.value === 'Ftp' || protocol.value === 'Ftps');
+/// FTP only knows passwords.
+const authTypes = computed(() => (isFtp.value ? allAuthTypes.value.filter((a) => a.value === 'Password') : allAuthTypes.value));
+
 const portManuallyChanged = ref(false);
 
-watch(protocol, (newProto) => {
+function defaultPort() {
+  return protocol.value === 'Ftps' && implicitTls.value ? 990 : defaultPorts[protocol.value];
+}
+
+watch([protocol, implicitTls], () => {
   if (!portManuallyChanged.value) {
-    port.value = defaultPorts[newProto];
+    port.value = defaultPort();
   }
+  if (isFtp.value) authType.value = 'Password';
 });
 
 function onPortInput() {
@@ -145,10 +163,12 @@ function buildProfile(id: string, storeSecret: boolean): Profile {
     username: username.value.trim(),
     auth_method: authMethod,
     remote_directory: remoteDirectory.value.trim() || undefined,
+    local_directory: localDirectory.value.trim() || undefined,
     description: description.value.trim() || undefined,
     tags,
     group: group.value.trim() || undefined,
     save_password: storeSecret,
+    implicit_tls: protocol.value === 'Ftps' && implicitTls.value,
   };
 }
 
@@ -216,7 +236,7 @@ async function onTest(trustedFingerprint?: string) {
 }
 
 // An answer about different settings would mislead.
-watch([host, port, protocol, username, authType, keyPath, secret, remoteDirectory], () => {
+watch([host, port, protocol, implicitTls, username, authType, keyPath, secret, remoteDirectory], () => {
   testRun++;
   test.value = null;
 });
@@ -251,12 +271,26 @@ watch([host, port, protocol, username, authType, keyPath, secret, remoteDirector
 
       <div class="form-group">
         <label class="form-label" :for="fieldId('protocol')">{{ t.profile.protocol }}</label>
-        <select :id="fieldId('protocol')" v-model="protocol" class="form-input" :aria-describedby="protocol === 'Scp' ? fieldId('scp') : undefined">
+        <select
+          :id="fieldId('protocol')"
+          v-model="protocol"
+          class="form-input"
+          :aria-describedby="protocol === 'Scp' || protocol === 'Ftp' ? fieldId('protocol-hint') : undefined"
+        >
           <option v-for="p in allProtocols" :key="p" :value="p" :disabled="!availableProtocols.includes(p)">
             {{ p }}{{ availableProtocols.includes(p) ? '' : t.profile.soon }}
           </option>
         </select>
-        <span v-if="protocol === 'Scp'" :id="fieldId('scp')" class="form-hint">{{ t.profile.scpHint }}</span>
+        <span v-if="protocol === 'Scp'" :id="fieldId('protocol-hint')" class="form-hint">{{ t.profile.scpHint }}</span>
+        <span v-else-if="protocol === 'Ftp'" :id="fieldId('protocol-hint')" class="form-hint form-warning">{{ t.profile.ftpHint }}</span>
+      </div>
+
+      <div v-if="protocol === 'Ftps'" class="form-group">
+        <label class="checkbox-label">
+          <input v-model="implicitTls" type="checkbox" :aria-describedby="fieldId('implicit-hint')" />
+          {{ t.profile.implicitTls }}
+        </label>
+        <span :id="fieldId('implicit-hint')" class="form-hint">{{ t.profile.implicitTlsHint }}</span>
       </div>
 
       <div class="form-group">
@@ -267,7 +301,7 @@ watch([host, port, protocol, username, authType, keyPath, secret, remoteDirector
       <div class="form-group">
         <label class="form-label" :for="fieldId('auth')">{{ t.profile.auth }}</label>
         <select :id="fieldId('auth')" v-model="authType" class="form-input">
-          <option v-for="a in allAuthTypes" :key="a.value" :value="a.value">{{ a.label }}</option>
+          <option v-for="a in authTypes" :key="a.value" :value="a.value">{{ a.label }}</option>
         </select>
       </div>
 
@@ -305,19 +339,29 @@ watch([host, port, protocol, username, authType, keyPath, secret, remoteDirector
       </div>
 
       <div class="form-group">
+        <label class="form-label" :for="fieldId('local-dir')">{{ t.profile.localDirectory }}</label>
+        <div class="input-with-button">
+          <input
+            :id="fieldId('local-dir')"
+            v-model="localDirectory"
+            type="text"
+            class="form-input"
+            spellcheck="false"
+            :aria-describedby="fieldId('local-dir-hint')"
+          />
+          <button type="button" class="btn" @click="browseLocal">{{ t.profile.browse }}</button>
+        </div>
+        <span :id="fieldId('local-dir-hint')" class="form-hint">{{ t.profile.localDirectoryHint }}</span>
+      </div>
+
+      <div class="form-group">
         <label class="form-label" :for="fieldId('group')">{{ t.profile.group }}</label>
-        <input
+        <SuggestInput
           :id="fieldId('group')"
           v-model="group"
-          type="text"
-          class="form-input"
-          :list="fieldId('groups')"
+          :suggestions="groups ?? []"
           :placeholder="t.profile.groupPlaceholder"
-          spellcheck="false"
         />
-        <datalist :id="fieldId('groups')">
-          <option v-for="g in groups ?? []" :key="g" :value="g" />
-        </datalist>
       </div>
 
       <div class="form-group">
@@ -393,6 +437,16 @@ watch([host, port, protocol, username, authType, keyPath, secret, remoteDirector
   gap: 12px;
 }
 
+.input-with-button {
+  display: flex;
+  gap: 6px;
+}
+
+.input-with-button .form-input {
+  flex: 1;
+  min-width: 0;
+}
+
 .form-group-grow {
   flex: 1;
 }
@@ -417,6 +471,10 @@ watch([host, port, protocol, username, authType, keyPath, secret, remoteDirector
 .form-hint {
   font-size: 11px;
   color: var(--color-text-muted);
+}
+
+.form-hint.form-warning {
+  color: var(--color-warning);
 }
 
 .form-error {

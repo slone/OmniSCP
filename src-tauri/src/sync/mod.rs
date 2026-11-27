@@ -281,7 +281,11 @@ fn scan_remote_entries(
         let meta = EntryMeta {
             is_dir: entry.is_dir,
             size: if entry.is_dir { 0 } else { entry.size },
-            modified: entry.modified,
+            modified: if entry.is_dir {
+                entry.modified
+            } else {
+                conn.exact_modified(&remote_join(root, &path), entry.modified)
+            },
         };
         if entry.is_dir {
             match conn.list_dir(&remote_join(root, &path)) {

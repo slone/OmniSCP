@@ -29,7 +29,7 @@ cargo test                   # Run backend tests
 cargo clippy                 # Lint backend
 ```
 
-Tests needing a real server are `#[ignore]`d. Their setup is at the top of each file in `src-tauri/tests/`: `sftp_live.rs`, `scp_live.rs` (run on both the Debian and Alpine servers, whose `ls` differ) and `transfer_live.rs` (queue and sync, over either protocol).
+Tests needing a real server are `#[ignore]`d. Their setup is at the top of each file in `src-tauri/tests/`: `sftp_live.rs`, `scp_live.rs` (run on both the Debian and Alpine servers, whose `ls` differ), `ftp_live.rs` (vsftpd and ProFTPD, FTP and FTPS) and `transfer_live.rs` (queue and sync, over any protocol).
 
 GitHub Actions (`.github/workflows/ci.yml`) builds the frontend and runs `cargo clippy -- -D warnings` and `cargo test` on Linux, macOS and Windows, and the ignored live tests on Linux against Docker servers. A Clippy warning fails the build, including one that only shows on another platform.
 
@@ -58,9 +58,11 @@ A tag `vX.Y.Z` runs `.github/workflows/release.yml`, which builds the installers
 
 ## Supported Protocols
 
-Available: SFTP and SCP, both over SSH. These two are the v1 scope. SCP runs shell commands on the server for everything but the file bytes, so it needs a POSIX shell there.
+Available: SFTP and SCP, both over SSH, and FTP and FTPS (`protocols/ftp.rs`, on `suppaftp` with rustls). SCP runs shell commands on the server for everything but the file bytes, so it needs a POSIX shell there.
 
-Planned for later: FTP, FTPS (FTP over TLS), WebDAV / WebDAV over HTTPS. Each implements the `Protocol` trait in `src-tauri/src/protocols/` and registers in `for_profile`.
+FTP servers vary: listings use MLSD when offered, else `LIST` parsed as `ls -l` (`protocols/listing.rs`, shared with SCP), and sync asks `exact_modified` for dates to the second. MLSD often describes a link as its target, so each MLSD listing is checked against `LIST` for links: a link taken for a folder would be followed by deletes. FTPS certificates not signed by a system authority go through the same confirmation as SSH host keys (`HostKeyUnknown`), and are remembered in `known_certificates`.
+
+Planned for later: WebDAV / WebDAV over HTTPS. Each implements the `Protocol` trait in `src-tauri/src/protocols/` and registers in `for_profile`.
 
 ## Architecture
 

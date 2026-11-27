@@ -256,6 +256,7 @@ function onDisconnect() {
     :host="hostKeyPrompt.profile.host"
     :port="hostKeyPrompt.profile.port"
     :fingerprint="hostKeyPrompt.fingerprint"
+    :certificate="hostKeyPrompt.profile.protocol === 'Ftps'"
     @accept="onHostKeyAccept"
     @cancel="onHostKeyCancel"
   />
